@@ -1,0 +1,63 @@
+"""本地启动入口：检查设备、打开页面、试跑，再按需执行完整流程。"""
+import argparse
+from importlib.metadata import version
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+import adbutils
+
+
+ROOT = Path(__file__).resolve().parent
+MODES = {
+    "check": [],
+    "open": ["--open-only"],
+    "trial": ["--max-tasks", "3", "--skip-race"],
+    "tasks": ["--skip-race"],
+    "all": [],
+    "race": ["--race-only"],
+}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", nargs="?", default="open", choices=MODES)
+    parser.add_argument("--serial", default="", help="多设备时指定 adb 序列号")
+    args = parser.parse_args(argv)
+
+    # 复用之前下载的 ADB；其他机器仍可使用 PATH 中的 ADB。
+    adb = ROOT.parent / "android-platform-tools" / "platform-tools" / "adb.exe"
+    if adb.is_file():
+        os.environ["ADBUTILS_ADB_PATH"] = str(adb)
+        os.environ["PATH"] = str(adb.parent) + os.pathsep + os.environ.get("PATH", "")
+    print(f"Python {sys.version.split()[0]} / uiautomator2 {version('uiautomator2')}", flush=True)
+    try:
+        devices = adbutils.adb.device_list()
+    except Exception as exc:
+        print(f"ADB 连接失败：{exc}")
+        return 1
+    if not devices:
+        print("未检测到已授权设备。请用数据线连接安卓手机，开启 USB 调试，并在手机上允许本机调试。")
+        return 1
+    if args.serial:
+        if args.serial not in {d.serial for d in devices}:
+            print("指定设备未连接或尚未授权，请用 adb devices 核对。")
+            return 1
+        serial = args.serial
+    elif len(devices) == 1:
+        serial = devices[0].serial
+    else:
+        print("检测到多台设备，请用 --serial 指定目标。")
+        return 1
+    if args.mode == "check":
+        print("设备连接检查通过；尚未打开淘宝或执行任务。")
+        return 0
+    return subprocess.run([
+        sys.executable, "-X", "utf8", str(ROOT / "2026淘宝双11.py"),
+        "--serial", serial, *MODES[args.mode],
+    ], cwd=ROOT).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
