@@ -52,6 +52,7 @@ SKIP_KEYWORDS = [
     "邀请好友", "拉1人", "拉好友", "助力", "邀请",      # 拉人
     "积分换", "积分兑", "兑换能量",                      # 积分换能量
     "游戏", "小游戏",                                    # 小游戏
+    "答题",                                              # 答题（答案不可控，跳过）
     "充值", "开通", "办卡", "下单", "购买",              # 要花钱的
 ]
 # 跨 App 任务的系统确认框按钮，优先点「30天内允许」以后就不再拦
@@ -258,10 +259,28 @@ def handle_modals(d, xml=None):
     """处理挡在页面上的浮层；返回是否点掉了什么"""
     xml = xml if xml is not None else dump_xml(d, retries=1)
     root = ET.fromstring(xml)
+    pm = parent_map(root)
+
+    def tap_with_parent(node):
+        """很多浮层的按钮是文字节点，真正可点的是它的父节点"""
+        target = node
+        p = pm.get(node)
+        if p is not None and p.get("clickable") == "true":
+            target = p
+        return tap_node(d, target)
+
     for label in MODAL_LABELS:
         for node in find_nodes(root, text=label):
-            if tap_node(d, node):
+            if tap_with_parent(node):
                 log(f"  处理浮层: {label}")
+                time.sleep(2.5)
+                return True
+    # 活动页的广告弹窗（「送你能量 600」那种），底下有个「关闭」按钮。
+    # 任务面板自己也有个「关闭」，所以面板开着的时候不能点。
+    if PANEL_TITLE not in xml:
+        for node in find_nodes(root, text="关闭", cls="Button"):
+            if tap_node(d, node):
+                log("  关闭广告弹窗")
                 time.sleep(2.5)
                 return True
     return False
@@ -380,16 +399,24 @@ def open_coin_page(d):
 
 def open_energy_panel(d):
     ad_tries = 0
+    modal_tries = 0
     ok = False
-    for _ in range(6):
+    for _ in range(8):
         xml = dump_xml(d)
         if PANEL_TITLE in xml:
             ok = True
             break
         if handle_modals(d, xml):
+            modal_tries += 1
+            if modal_tries >= 3:
+                log("  浮层点了几次都不消，重启页面")
+                modal_tries = 0
+                if restart_app(d, "浮层点不掉"):
+                    open_coin_page(d)
             continue
         if ad_tries < 2 and close_ad(d, xml):
             ad_tries += 1
+            mute(d)  # 广告关掉后音效会自己恢复成「开」，补关一次
             continue
         root = ET.fromstring(xml)
         btns = find_nodes(root, rid=ENERGY_RID) or find_nodes(root, text="赚能量")
@@ -441,12 +468,21 @@ def close_panel(d):
 
 def ensure_rows(d):
     """拿到任务行；拿不到就按 清浮层 -> 关面板重开 -> 重启 的顺序自愈"""
+    modal_tries = 0
     for attempt in range(5):
         xml = dump_xml(d)
         rows = panel_rows(d, xml)
         if rows:
             return rows
         if handle_modals(d, xml):
+            modal_tries += 1
+            if modal_tries >= 2:
+                log("  浮层点了两次都没消，重启页面")
+                modal_tries = 0
+                if not restart_app(d, "浮层点不掉"):
+                    break
+                if not open_coin_page(d) or not open_energy_panel(d):
+                    break
             continue
         if PANEL_TITLE in xml:
             log("  面板在，但任务行取不到，关闭重开")
@@ -574,6 +610,7 @@ def do_tasks(d, max_tasks=0):
     attempted = {}
     failed = {}
     logged_missing = set()
+    jump_fail = 0
     while True:
         if max_tasks and done >= max_tasks:
             log(f"到达 --max-tasks {max_tasks}，停止")
@@ -582,7 +619,6 @@ def do_tasks(d, max_tasks=0):
         if not rows:
             log("取不到任务行，结束任务循环")
             break
-        mute(d)  # 页面每次重载音效都会回到「开」，每轮顺手再确认一次（没有就什么也不做）
 
         candidate = pick_task(d, rows, failed, logged_missing, attempted)
 
@@ -609,8 +645,12 @@ def do_tasks(d, max_tasks=0):
         if jump_kind:
             log(f"  这是跨 App 任务（{jump_kind}）")
             if not jump_out(d, dwell=dwell_seconds(name)):
-                log("  跨 App 任务回来后打不开面板，结束")
-                break
+                jump_fail += 1
+                log(f"  跨 App 任务回来后打不开面板（{jump_fail}/3）")
+                if jump_fail >= 3:
+                    log("  连续 3 次回不来，结束")
+                    break
+                continue
         else:
             x2 = dump_xml(d, retries=1)
             if PANEL_TITLE in x2 and "去完成" in x2:
@@ -625,13 +665,13 @@ def do_tasks(d, max_tasks=0):
                     break
         claim_rewards(d)
         done += 1
-        # 核对计数有没有涨：页面刷新有延迟，等一下再看；两次没涨就不再碰这条任务
+        # 核对计数：只是提示，不据此拉黑任务。
+        # 面板会滚动、同名任务行可能有好几条，这个判断容易误伤，所以只看不判。
         time.sleep(2)
         after_rows = panel_rows(d) or ensure_rows(d)
-        m = next((progress_of(r["name"]) for r in after_rows if task_key(r["name"]) == key), None)
-        if m is not None and m[0] <= before:
-            failed[key] = failed.get(key, 0) + 1
-            log(f"  计数没变（{m[0]}/{m[1]}），这条任务这次没算上（{failed[key]}/2）")
+        progs = [progress_of(r["name"])[0] for r in after_rows if task_key(r["name"]) == key]
+        if progs and max(progs) <= before:
+            log("  提示：面板上没看到计数变化（列表可能滚走了，不影响继续）")
     return done
 
 
@@ -650,7 +690,8 @@ def scroll_panel(d):
 def do_race(d, min_energy=20):
     """长按「升级赛车拿钱」把能量换成抵金；每轮会冒出「解锁新车轮/尾翼」浮层"""
     last_energy = None
-    for _ in range(15):
+    stuck = 0
+    for _ in range(40):
         xml = dump_xml(d)
         if handle_modals(d, xml):
             continue
@@ -666,8 +707,14 @@ def do_race(d, min_energy=20):
         if energy < min_energy:
             break
         if energy == last_energy:
-            log("  能量没有变化，这轮长按没生效，结束赛车")
-            break
+            stuck += 1
+            log(f"  能量没变化，重按一次（{stuck}/3）")
+            if stuck >= 3:
+                log("  连续 3 次没变化，结束赛车")
+                break
+            time.sleep(3)
+            continue
+        stuck = 0
         last_energy = energy
         c = center(btns[0])
         if not c:
