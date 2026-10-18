@@ -1,0 +1,2 @@
+# 只依赖 uiautomator2；版本尽量固定，不同版本 API 差异较大
+uiautomator2==3.5.2
