@@ -26,6 +26,44 @@ def panel(current=0, cumulative=5):
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_race_retries_a_temporarily_missing_button(self):
+        race = '<hierarchy><node text="升级赛车拿钱 剩余 0 能量" bounds="[200,900][900,1100]" /></hierarchy>'
+        d = Mock()
+        with patch.object(a, 'dump_xml', side_effect=['<hierarchy />', race, race]), \
+                patch.object(a, 'current_app', return_value=(a.TB_APP, '.Race')), \
+                patch.object(a, 'handle_modals', return_value=False), \
+                patch.dict(a.RUN_REPORT, {}, clear=True), patch.object(a.time, 'sleep'):
+            a.do_race(d)
+            self.assertEqual(a.RUN_REPORT['race']['after'], 0)
+            self.assertIn('能量已用尽', a.RUN_REPORT['race']['stop_reason'])
+        d.long_click.assert_not_called()
+
+    def test_race_checks_for_delayed_energy_after_zero(self):
+        def race(energy):
+            return f'<hierarchy><node text="升级赛车拿钱 剩余 {energy} 能量" bounds="[200,900][900,1100]" /></hierarchy>'
+        d = Mock()
+        with patch.object(a, 'dump_xml', side_effect=[race(0), race(100), race(0), race(0)]), \
+                patch.object(a, 'current_app', return_value=(a.TB_APP, '.Race')), \
+                patch.object(a, 'handle_modals', return_value=False), \
+                patch.dict(a.RUN_REPORT, {}, clear=True), patch.object(a.time, 'sleep'):
+            a.do_race(d)
+            self.assertEqual(a.RUN_REPORT['race']['after'], 0)
+        d.long_click.assert_called_once()
+
+    def test_search_submits_exact_search_button_not_suggestions(self):
+        x = '''<hierarchy><node class="android.widget.EditText" bounds="[100,100][500,200]" />
+          <node text="搜索建议" class="android.widget.TextView" bounds="[100,300][500,400]" />
+          <node text="搜索" class="android.widget.TextView" clickable="true" bounds="[800,100][1000,200]" />
+        </hierarchy>'''
+        d = Mock()
+        d.window_size.return_value = (1080, 2400)
+        with patch.object(a, 'current_app', return_value=(a.TB_APP, '.Search')), \
+                patch.object(a, 'dump_xml', return_value=x), patch.object(a.time, 'sleep'), \
+                patch.object(a.time, 'monotonic', side_effect=[0, 100]):
+            self.assertTrue(a.browse(d, '搜一搜喜欢的宝贝(0/5)浏览5秒'))
+        self.assertEqual(d.click.call_args.args, (900, 150))
+        d.send_keys.assert_not_called()
+
     def test_empty_coin_webview_resets_reader_once(self):
         shell = '<hierarchy><node text="淘金币首页" />' + '<node text="" />' * 74 + '</hierarchy>'
         ready = shell.replace('淘金币首页', '淘金币首页 赚金币 赚能量 升级赛车拿钱')
@@ -71,7 +109,7 @@ class ReliabilityTests(unittest.TestCase):
             return ('<hierarchy><node class="android.widget.Button" '
                     f'text="升级赛车拿钱 剩余 {energy} 能量" bounds="[200,900][900,1100]" /></hierarchy>')
         d = Mock()
-        with patch.object(a, 'dump_xml', side_effect=[panel(), race(100), race(40), race(0)]), \
+        with patch.object(a, 'dump_xml', side_effect=[panel(), race(100), race(40), race(0), race(0)]), \
                 patch.object(a, 'close_panel') as close, \
                 patch.object(a, 'handle_modals', return_value=False), \
                 patch.object(a, 'current_app', return_value=(a.TB_APP, '.Race')), \

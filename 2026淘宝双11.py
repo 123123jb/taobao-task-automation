@@ -627,9 +627,11 @@ def browse(d, task_name):
         d.shell(["input", "text", keyword])
         time.sleep(1.5)
         root = ET.fromstring(dump_xml(d, retries=1))
-        for btn in find_nodes(root, contains="搜索"):
-            tap_node(d, btn)
-            break
+        buttons = find_nodes(root, text="搜索", clickable="true") or find_nodes(root, desc="搜索")
+        if buttons:
+            tap_node(d, buttons[0])
+        else:
+            d.shell(["input", "keyevent", "66"])
         time.sleep(4)
 
     w, h = d.window_size()
@@ -800,6 +802,8 @@ def do_race(d, min_energy=20):
     """长按「升级赛车拿钱」把能量换成抵金；每轮会冒出「解锁新车轮/尾翼」浮层"""
     last_energy = None
     stuck = 0
+    unreadable = 0
+    low_energy_reads = 0
     race = RUN_REPORT.setdefault("race", {"before": None, "after": None, "holds": 0})
     for _ in range(100):
         if current_app(d)[0] != TB_APP:
@@ -814,19 +818,39 @@ def do_race(d, min_energy=20):
         root = ET.fromstring(xml)
         btns = find_nodes(root, contains=RACE_TXT)
         if not btns:
-            log("找不到「升级赛车拿钱」，结束赛车")
-            race["stop_reason"] = "找不到赛车按钮"
-            break
+            unreadable += 1
+            low_energy_reads = 0
+            if unreadable >= 3:
+                race["stop_reason"] = "连续三次找不到赛车按钮，未确认能量耗尽"
+                log(race["stop_reason"])
+                break
+            log("赛车按钮暂未出现，等待页面刷新")
+            time.sleep(2)
+            continue
         text = btns[0].get("text") or ""
         m = re.search(r"剩余\s*(\d+)\s*能量", text)
         energy = int(m.group(1)) if m else -1
-        if race["before"] is None and energy >= 0:
+        if energy < 0:
+            unreadable += 1
+            low_energy_reads = 0
+            if unreadable >= 3:
+                race["stop_reason"] = "连续三次无法读取剩余能量"
+                break
+            time.sleep(2)
+            continue
+        unreadable = 0
+        if race["before"] is None:
             race["before"] = energy
         race["after"] = energy
         log(f"赛车：剩余 {energy} 能量")
         if energy < min_energy:
-            race["stop_reason"] = "能量已用尽或不足一次升级" if energy >= 0 else "无法读取剩余能量"
-            break
+            low_energy_reads += 1
+            if low_energy_reads >= 2:
+                race["stop_reason"] = "能量已用尽或不足一次升级"
+                break
+            time.sleep(3)
+            continue
+        low_energy_reads = 0
         if energy == last_energy:
             stuck += 1
             if stuck >= 3:
