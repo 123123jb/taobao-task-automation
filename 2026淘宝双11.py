@@ -495,16 +495,10 @@ def browse(d, task_name):
         log(f"  搜索：{keyword}")
         tap_node(d, edits[0])
         time.sleep(1.2)
-        # 优先用 adb 的 input text（纯英文，能直接打字）：这样不用装 AdbKeyboard 输入法，
-        # 也就不会把你手机原来的输入法换掉。打不进去再退回 u2 的输入法通道。
-        d.shell(f"input text {keyword}")
-        time.sleep(1.2)
-        typed = [n for n in find_nodes(ET.fromstring(dump_xml(d, retries=1)), cls="EditText")
-                 if (n.get("text") or "").strip()]
-        if not typed:
-            log("  输入框还是空的，改用 u2 的输入法通道")
-            d.send_keys(keyword)
-            time.sleep(1.2)
+        # 走 uiautomator2 的输入法通道（必要时会自动装 AdbKeyboard，中文也能打）；
+        # 跑完在 main 的 finally 里会把默认输入法切回你原来的那个。
+        d.send_keys(keyword)
+        time.sleep(1.5)
         for btn in find_nodes(root, cls="Button", contains="搜索"):
             tap_node(d, btn)
             break
@@ -685,6 +679,45 @@ def do_race(d, min_energy=20):
             close_panel(d)
 
 
+# ---------------------------------------------------------------- 输入法还原
+
+ORIGINAL_IME = ""
+
+
+def current_ime(d):
+    out = d.shell("settings get secure default_input_method").output or ""
+    return out.strip()
+
+
+def remember_ime(d):
+    """开跑前记下手机原来的默认输入法（u2 打字时会切到 AdbKeyboard）"""
+    global ORIGINAL_IME
+    ime = current_ime(d)
+    if not ime or ime.lower() == "null":
+        return
+    if "com.github.uiautomator" in ime:
+        log("当前默认输入法已经是 AdbKeyboard，无法知道原来的，收尾时不动它")
+        return
+    ORIGINAL_IME = ime
+    log(f"已记录原输入法：{ime}")
+
+
+def restore_ime(d):
+    """收尾：把默认输入法切回原来的（正常结束、异常、Ctrl+C 都会走到）"""
+    if not ORIGINAL_IME:
+        return
+    now = current_ime(d)
+    if now == ORIGINAL_IME:
+        log("输入法仍是原来的，无需还原")
+        return
+    log(f"把输入法从 {now} 切回 {ORIGINAL_IME}")
+    d.shell(f"ime set {ORIGINAL_IME}")
+    d.shell(f"settings put secure default_input_method {ORIGINAL_IME}")
+    time.sleep(1)
+    now = current_ime(d)
+    log("输入法已切回原样" if now == ORIGINAL_IME else f"输入法切回失败，当前是 {now}")
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -699,26 +732,29 @@ def main():
     d = u2.connect(args.serial) if args.serial else u2.connect()
     log(f"已连接设备：{d.serial}")
     started = time.time()
+    remember_ime(d)
+    try:
+        restart_app(d, "开场重置页面")
+        if not open_coin_page(d):
+            raise SystemExit("进不去淘金币活动页")
+        if args.open_only:
+            log("已打开活动页（--open-only）")
+            return
 
-    restart_app(d, "开场重置页面")
-    if not open_coin_page(d):
-        raise SystemExit("进不去淘金币活动页")
-    if args.open_only:
-        log("已打开活动页（--open-only）")
-        return
+        if not args.race_only:
+            if not open_energy_panel(d):
+                raise SystemExit("打不开「做任务赚能量」面板")
+            done = do_tasks(d, max_tasks=args.max_tasks)
+            log(f"共完成 {done} 个能量任务")
+            close_panel(d)
 
-    if not args.race_only:
-        if not open_energy_panel(d):
-            raise SystemExit("打不开「做任务赚能量」面板")
-        done = do_tasks(d, max_tasks=args.max_tasks)
-        log(f"共完成 {done} 个能量任务")
-        close_panel(d)
+        if not args.skip_race:
+            do_race(d)
 
-    if not args.skip_race:
-        do_race(d)
-
-    minutes, seconds = divmod(int(time.time() - started), 60)
-    log(f"共耗时: {minutes} 分钟 {seconds} 秒，重启淘宝 {RESTARTS} 次")
+        minutes, seconds = divmod(int(time.time() - started), 60)
+        log(f"共耗时: {minutes} 分钟 {seconds} 秒，重启淘宝 {RESTARTS} 次")
+    finally:
+        restore_ime(d)
 
 
 if __name__ == "__main__":

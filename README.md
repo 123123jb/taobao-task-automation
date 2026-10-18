@@ -24,16 +24,26 @@ uiautomator2 第一次连手机会自己推两样东西，知道一下免得被�
 | 东西 | 大小 | 是什么 |
 |---|---|---|
 | `u2.jar` | 约 3.7 MB | 服务端，推到手机 `/data/local/tmp/u2.jar`，用 `app_process` 跑。**不是 App**，桌面看不到，删了下次自动重推 |
-| `com.github.uiautomator` | 约 1.8 MB | 一个 APK，提供 AdbKeyboard 输入法。只有往输入框打英文失败时才装，第一次要等 30~60 秒，手机会弹「是否安装此应用」，点允许 |
+| `com.github.uiautomator` | 约 1.8 MB | 一个 APK，提供 AdbKeyboard 输入法。第一次「搜一搜」任务要往搜索框打字时装，要等 30~60 秒，手机会弹「是否安装此应用」，点允许 |
 
-脚本默认用 `adb shell input text` 打英文搜索词，**正常情况下不会装这个 APK，也不会改你手机的默认键盘**。
-万一装过、默认输入法被换成了 AdbKeyboard，这样改回来：
+**输入法会自动还原**：脚本开跑前记下你手机原来的默认输入法，结束时会用 `ime set` 切回去——
+正常跑完、中途报错、Ctrl+C 都会走到这一步。日志里能看到：
+
+```
+已记录原输入法：com.sohu.inputmethod.sogou/.SogouIME
+...
+把输入法从 com.github.uiautomator/.AdbKeyboard 切回 com.sohu.inputmethod.sogou/.SogouIME
+输入法已切回原样
+```
+
+如果哪天没切回去（比如进程被强制杀掉），手动恢复：
 
 ```bash
-adb shell ime list -s                      # 列出手机上所有输入法，找到你原来那个的 id
-adb shell ime set <原来的输入法id>          # 切回去
-adb uninstall com.github.uiautomator        # 不需要的话顺手卸掉
+adb shell ime list -s                 # 列出手机上所有输入法，找到你原来那个的 id
+adb shell ime set <原来那个的 id>
 ```
+
+那个 APK 想卸也可以：`adb uninstall com.github.uiautomator`（下次要打字会重新装）。
 
 ## 用法
 
