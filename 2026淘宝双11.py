@@ -94,6 +94,8 @@ def dump_xml(d, retries=3):
         if xml.count("<node ") >= 15:
             return xml
         time.sleep(1.0)
+    if not xml.strip():
+        raise RuntimeError("无法读取手机界面，请检查 USB 连接、调试授权和手机解锁状态")
     return xml
 
 
@@ -242,9 +244,10 @@ def tap_skip(d, xml=None):
     """关掉视频广告的「跳过」和「我知道了 / 以后再说」"""
     xml = xml if xml is not None else dump_xml(d, retries=1)
     root = ET.fromstring(xml)
-    for node in (find_nodes(root, text="跳过") + find_nodes(root, text="我知道了")):
+    for node in (find_nodes(root, text="跳过") + find_nodes(root, text="我知道了")
+                 + find_nodes(root, desc="关闭按钮")):
         if tap_node(d, node):
-            log(f"  关闭弹窗: {node.get('text')}")
+            log(f"  关闭弹窗: {node.get('text') or node.get('content-desc')}")
             time.sleep(2)
             return True
     return False
@@ -357,6 +360,8 @@ def open_coin_page(d):
             mute(d)
             return True
         root = ET.fromstring(xml)
+        if tap_skip(d, xml):
+            continue
         entries = find_nodes(root, desc=COIN_DESC)
         if entries:
             clickable = [n for n in entries if n.get("clickable") == "true"] or entries
@@ -761,7 +766,10 @@ def main():
         minutes, seconds = divmod(int(time.time() - started), 60)
         log(f"共耗时: {minutes} 分钟 {seconds} 秒，重启淘宝 {RESTARTS} 次")
     finally:
-        restore_ime(d)
+        try:
+            restore_ime(d)
+        except Exception as exc:
+            log(f"输入法还原未完成，请重新连接手机后核对输入法：{exc}")
 
 
 if __name__ == "__main__":
