@@ -26,8 +26,9 @@ def main(argv=None):
     parser.add_argument("--serial", default="", help="多设备时指定 adb 序列号")
     args = parser.parse_args(argv)
 
-    # 复用之前下载的 ADB；其他机器仍可使用 PATH 中的 ADB。
-    adb = ROOT.parent / "android-platform-tools" / "platform-tools" / "adb.exe"
+    # 保留显式选择的 ADB，便于在不同设备上验证连接兼容性。
+    adb = Path(os.environ.get("ADBUTILS_ADB_PATH") or
+               ROOT.parent / "android-platform-tools" / "platform-tools" / "adb.exe")
     if adb.is_file():
         os.environ["ADBUTILS_ADB_PATH"] = str(adb)
         os.environ["PATH"] = str(adb.parent) + os.pathsep + os.environ.get("PATH", "")

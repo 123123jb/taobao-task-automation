@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -14,6 +15,12 @@ spec.loader.exec_module(launcher)
 
 
 class LauncherTests(unittest.TestCase):
+    def test_explicit_adb_path_is_preserved(self):
+        with patch.dict(launcher.os.environ, {"ADBUTILS_ADB_PATH": sys.executable}):
+            result, _ = self.invoke(["check"], ["phone-a"])
+            self.assertEqual(result, 0)
+            self.assertEqual(launcher.os.environ["ADBUTILS_ADB_PATH"], sys.executable)
+
     def invoke(self, args, serials):
         devices = [SimpleNamespace(serial=s) for s in serials]
         with patch.object(launcher.adbutils.adb, "device_list", return_value=devices), \

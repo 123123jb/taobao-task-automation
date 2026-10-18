@@ -53,6 +53,7 @@ SKIP_KEYWORDS = [
     "积分换", "积分兑", "兑换能量",                      # 积分换能量
     "游戏", "小游戏",                                    # 小游戏
     "充值", "开通", "办卡", "下单", "购买",              # 要花钱的
+    "预约", "订阅", "答题", "考试",                      # 需要额外确认或专门处理
 ]
 # 跨 App 任务的系统确认框按钮，优先点「30天内允许」以后就不再拦
 JUMP_ALLOW_LABELS = ["30天内允许", "仅本次允许", "打开", "允许"]
@@ -367,8 +368,16 @@ def open_coin_page(d):
             clickable = [n for n in entries if n.get("clickable") == "true"] or entries
             log("点击「领淘金币」入口")
             tap_node(d, clickable[0])
-            time.sleep(9)
-            tap_skip(d)
+            time.sleep(3)
+            # WebView 首次加载较慢；等到活动按钮出现，再判断是否需要返回。
+            for _ in range(12):
+                loading_xml = dump_xml(d, retries=1)
+                if on_coin_page(loading_xml):
+                    log("已进入淘金币活动页")
+                    mute(d)
+                    return True
+                tap_skip(d, loading_xml)
+                time.sleep(2)
             continue
         if COIN_PAGE_TXT in xml or "赚能量" in xml:
             restart_app(d, "活动页按钮节点缺失")
@@ -540,7 +549,17 @@ def claim_rewards(d):
     if PANEL_TITLE not in xml:
         return
     root = ET.fromstring(xml)
-    for node in find_nodes(root, contains="领取", cls="Button"):
+    titles = find_nodes(root, text=PANEL_TITLE)
+    if not titles:
+        return
+    pm = parent_map(root)
+    panel = titles[0]
+    # WebView 还会暴露被面板遮住的商品页；只在当前任务面板内领奖。
+    while panel is not None and not find_nodes(panel, text="累计任务奖励"):
+        panel = pm.get(panel)
+    if panel is None:
+        return
+    for node in find_nodes(panel, contains="领取", cls="Button"):
         text = node.get("text") or ""
         if "已领取" in text:
             continue

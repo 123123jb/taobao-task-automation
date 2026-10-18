@@ -11,6 +11,41 @@ spec.loader.exec_module(activity)
 
 
 class ActivityTests(unittest.TestCase):
+    def test_claim_rewards_ignores_coupon_behind_task_panel(self):
+        xml = '''<hierarchy>
+          <node text="¥ 3 限时领取" class="android.widget.Button" bounds="[900,1600][1100,1800]" />
+          <node>
+            <node><node text="做任务赚能量" /></node>
+            <node text="累计任务奖励" />
+            <node text="领取1000能量" class="android.widget.Button" bounds="[300,650][500,800]" />
+            <node text="已领取" class="android.widget.Button" bounds="[600,650][800,800]" />
+          </node>
+        </hierarchy>'''
+        device = Mock()
+        with patch.object(activity, "dump_xml", return_value=xml), \
+                patch.object(activity.time, "sleep"), \
+                patch.object(activity, "tap_skip"):
+            activity.claim_rewards(device)
+        device.click.assert_called_once()
+        x, y = device.click.call_args.args
+        self.assertTrue(300 <= x <= 500 and 650 <= y <= 800)
+
+    def test_reservation_task_is_skipped(self):
+        rows = [{"name": "预约组队开赛提醒(0/1)成功订阅组队开赛提醒得+1000", "node": None}]
+        self.assertIsNone(activity.pick_task(Mock(), rows, {}, set(), {}))
+
+    def test_slow_activity_load_does_not_press_back(self):
+        home = '<hierarchy><node content-desc="领淘金币" bounds="[492,343][683,544]" /></hierarchy>'
+        loading = '<hierarchy><node text="加载中" /></hierarchy>'
+        page = '<hierarchy><node text="赚金币 赚能量 升级赛车拿钱" /></hierarchy>'
+        device = Mock()
+        with patch.object(activity, "dump_xml", side_effect=[home, loading, loading, page]), \
+                patch.object(activity, "current_app", return_value=(activity.TB_APP, "")), \
+                patch.object(activity.time, "sleep"), \
+                patch.object(activity, "mute"):
+            self.assertTrue(activity.open_coin_page(device))
+        device.press.assert_not_called()
+
     def test_failed_hierarchy_read_reports_connection_error(self):
         device = Mock()
         device.dump_hierarchy.side_effect = OSError("device offline")
