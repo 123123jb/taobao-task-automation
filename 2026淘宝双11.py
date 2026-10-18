@@ -693,10 +693,17 @@ def remember_ime(d):
     """开跑前记下手机原来的默认输入法（u2 打字时会切到 AdbKeyboard）"""
     global ORIGINAL_IME
     ime = current_ime(d)
-    if not ime or ime.lower() == "null":
-        return
     if "com.github.uiautomator" in ime:
-        log("当前默认输入法已经是 AdbKeyboard，无法知道原来的，收尾时不动它")
+        # 已经是 AdbKeyboard 了（比如之前跑过一次没还原）：从已装输入法里推断原来的那个
+        others = [x.strip() for x in (d.shell("ime list -s").output or "").splitlines()
+                  if x.strip() and "com.github.uiautomator" not in x]
+        if len(others) == 1:
+            ORIGINAL_IME = others[0]
+            log(f"当前是 AdbKeyboard，推断原来的输入法是：{ORIGINAL_IME}")
+        else:
+            log(f"当前是 AdbKeyboard，可选的输入法有 {len(others)} 个，推断不出原来的，收尾时不动它")
+        return
+    if not ime or ime.lower() == "null":
         return
     ORIGINAL_IME = ime
     log(f"已记录原输入法：{ime}")
