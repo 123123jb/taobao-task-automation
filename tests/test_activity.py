@@ -57,7 +57,9 @@ class ActivityTests(unittest.TestCase):
         with patch("sys.argv", ["activity", "--open-only"]), \
                 patch.object(activity.u2, "connect", return_value=Mock()), \
                 patch.object(activity, "remember_ime"), \
-                patch.object(activity, "restart_app", side_effect=RuntimeError("original connection failure")), \
+                patch.object(activity, "open_coin_page", side_effect=RuntimeError("original connection failure")), \
+                patch.object(activity, "start_run", create=True), \
+                patch.object(activity, "save_run_report", create=True), \
                 patch.object(activity, "restore_ime", side_effect=OSError("device offline")):
             with self.assertRaisesRegex(RuntimeError, "original connection failure"):
                 activity.main()

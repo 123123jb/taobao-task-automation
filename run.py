@@ -24,6 +24,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", nargs="?", default="open", choices=MODES)
     parser.add_argument("--serial", default="", help="多设备时指定 adb 序列号")
+    parser.add_argument("--allow-app-jumps", action="store_true", help="启用跨 App 任务")
     args = parser.parse_args(argv)
 
     # 保留显式选择的 ADB，便于在不同设备上验证连接兼容性。
@@ -54,9 +55,10 @@ def main(argv=None):
     if args.mode == "check":
         print("设备连接检查通过；尚未打开淘宝或执行任务。")
         return 0
+    flags = MODES[args.mode] + (["--allow-app-jumps"] if args.allow_app_jumps else [])
     return subprocess.run([
         sys.executable, "-X", "utf8", str(ROOT / "2026淘宝双11.py"),
-        "--serial", serial, *MODES[args.mode],
+        "--serial", serial, *flags,
     ], cwd=ROOT).returncode
 
 

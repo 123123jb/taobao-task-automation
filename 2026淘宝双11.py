@@ -16,11 +16,10 @@
 实现要点
 --------
 1. 元素定位全部用 dump_hierarchy 解析无障碍树 + 按坐标点击。
-   本机 uiautomator2 3.5.2 + Android 17 上 `.exists` / `.count` 会给出互相矛盾的
-   结果（同一个按钮 exists=False 但 count=3），所以不用它们。
+   部分 WebView 上 `.exists` / `.count` 会给出互相矛盾的结果，因此统一解析界面树。
 2. 活动页是 WebView，无障碍树偶尔会整片消失（只剩 70 多个壳节点）。检测到这种
    情况就依次尝试：关闭面板重开 -> 重启淘宝 -> 重新进活动页。
-3. 跨应用任务（支付宝/小程序）会弹系统确认框，默认跳过，避免跳出淘宝。
+3. 默认跳过跨应用任务；显式传入 --allow-app-jumps 后处理已安装的目标应用。
 
 运行
 ----
@@ -32,8 +31,11 @@
 前置：adb 可用、手机已连接并登录淘宝。
 """
 import argparse
+import json
+from pathlib import Path
 import random
 import re
+import sys
 import time
 import xml.etree.ElementTree as ET
 
@@ -55,11 +57,14 @@ SKIP_KEYWORDS = [
     "充值", "开通", "办卡", "下单", "购买",              # 要花钱的
     "预约", "订阅", "答题", "考试",                      # 需要额外确认或专门处理
 ]
-# 跨 App 任务的系统确认框按钮，优先点「30天内允许」以后就不再拦
-JUMP_ALLOW_LABELS = ["30天内允许", "仅本次允许", "打开", "允许"]
+# 只选择本次打开，不自动授予 30 天跨应用跳转权限。
+JUMP_ALLOW_LABELS = ["仅本次允许", "打开", "允许"]
+ALLOW_APP_JUMPS = False
+BLOCKED_APPS = set()
 
 # 任务名里出现这些字眼就是往对应 App 跳；手机没装就别浪费时间去点
 APP_PACKAGES = {
+    "蚂蚁庄园": "com.eg.android.AlipayGphone",
     "百度": "com.baidu.searchbox",
     "闲鱼": "com.taobao.idlefish",
     "支付宝": "com.eg.android.AlipayGphone",
@@ -75,11 +80,17 @@ APP_PACKAGES = {
 SEARCH_KEYS = ["iphone16", "macbook", "airpods", "nike", "switch", "kindle"]  # 用英文，adb 输入中文需要额外输入法
 
 RESTARTS = 0
-MAX_RESTARTS = 24
+MAX_RESTARTS = 3
+RUN_REPORT = {}
+LOG_FILE = None
 
 
 def log(*args):
-    print(*args, flush=True)
+    message = f"[{time.strftime('%H:%M:%S')}] " + " ".join(map(str, args))
+    print(message, flush=True)
+    if LOG_FILE is not None:
+        LOG_FILE.write(message + "\n")
+        LOG_FILE.flush()
 
 
 # ---------------------------------------------------------------- 无障碍树工具
@@ -92,6 +103,14 @@ def dump_xml(d, retries=3):
         except Exception as e:
             log(f"  取界面失败: {e}")
             xml = ""
+        if (COIN_PAGE_TXT in xml and xml.count("<node ") < 120 and not on_coin_page(xml)
+                and RUN_REPORT.get("tree_resets", 0) < 2):
+            RUN_REPORT["tree_resets"] = RUN_REPORT.get("tree_resets", 0) + 1
+            log("活动页只返回外壳，重连界面读取服务，不重启淘宝")
+            d.stop_uiautomator()
+            d.start_uiautomator()
+            time.sleep(0.3)
+            continue
         if xml.count("<node ") >= 15:
             return xml
         time.sleep(1.0)
@@ -137,7 +156,7 @@ def center(node):
     return ((b[0] + b[2]) // 2, (b[1] + b[3]) // 2) if b else None
 
 
-def tap_node(d, node, jitter=8):
+def tap_node(d, node, jitter=0):
     c = center(node)
     if not c:
         return False
@@ -146,15 +165,33 @@ def tap_node(d, node, jitter=8):
 
 
 def current_app(d):
-    out = d.shell("dumpsys window | grep mCurrentFocus").output or ""
-    m = re.search(r"mCurrentFocus=Window\{.*? u0 ([\w.]+)/([\w.$]+)\}", out)
+    out = d.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").output or ""
+    m = re.search(r"(?:mCurrentFocus|mFocusedApp)=.*?\bu\d+\s+([\w.]+)/([\w.$]+)", out)
     return (m.group(1), m.group(2)) if m else (None, None)
+
+
+def swipe_in_app(d, x1, y1, x2, y2, duration, allowed=(TB_APP,)):
+    if current_app(d)[0] not in allowed:
+        return False
+    try:
+        d.swipe(x1, y1, x2, y2, duration)
+    except Exception as exc:
+        if "INJECT_EVENTS" not in str(exc):
+            raise
+        time.sleep(0.3)
+        if current_app(d)[0] not in allowed:
+            return False
+        log("页面切换导致手势注入失败，改用已授权的 ADB input")
+        result = d.shell(["input", "swipe", str(x1), str(y1), str(x2), str(y2), str(int(duration*1000))])
+        if result.exit_code != 0:
+            raise RuntimeError(f"ADB 手势失败：{result.output}")
+    return True
 
 
 def start_taobao(d):
     log("  拉起淘宝")
     d.shell(f"am start -n {TB_APP}/com.taobao.tao.welcome.Welcome")
-    time.sleep(10)
+    time.sleep(2)
 
 
 def jump_dialog_shown(d):
@@ -164,7 +201,7 @@ def jump_dialog_shown(d):
 
 
 def allow_jump(d):
-    """允许跨 App 跳转：优先「30天内允许」，之后就不会再拦"""
+    """允许本次跨 App 打开，不修改长期授权。"""
     xml = dump_xml(d, retries=2)
     root = ET.fromstring(xml)
     for label in JUMP_ALLOW_LABELS:
@@ -178,29 +215,45 @@ def allow_jump(d):
 
 
 def jump_out(d, dwell=12):
-    """跨 App 任务：允许跳转 -> 在对方 App 里逛够时间 -> 重启淘宝回活动页"""
+    """在已登录的目标 App 浏览，再保留淘宝进程返回活动。"""
+    pkg, activity = current_app(d)
+    if "login" in (activity or "").lower():
+        BLOCKED_APPS.add(pkg)
+        log(f"跨 App 任务暂停：{pkg} 需要先登录")
+        return False
+    if pkg not in {TB_APP, OPLUS_PKG, *APP_PACKAGES.values()}:
+        log(f"停止跨 App 浏览：当前前台是 {pkg}")
+        return False
     if jump_dialog_shown(d):
         allow_jump(d)
     w, h = d.window_size()
     start = time.time()
     browsed = False
     while time.time() - start < dwell:
-        pkg, _ = current_app(d)
-        if pkg and pkg != TB_APP:
+        pkg, activity = current_app(d)
+        if "login" in (activity or "").lower():
+            BLOCKED_APPS.add(pkg)
+            log(f"跨 App 任务暂停：{pkg} 需要先登录")
+            return False
+        if pkg in APP_PACKAGES.values():
             browsed = True
-            d.swipe(w // 2, int(h * 0.75), w // 2, int(h * 0.35), random.uniform(0.4, 0.8))
+            if not swipe_in_app(d, w // 2, int(h * 0.75), w // 2, int(h * 0.35), 0.4,
+                                allowed=tuple(APP_PACKAGES.values())):
+                return False
             time.sleep(random.uniform(1.5, 2.5))
         else:
+            if pkg != TB_APP:
+                return False
             time.sleep(1.5)
     if browsed:
         log(f"  在对方 App 里逛了 {dwell} 秒")
-    # 从别的 App 回到活动页最容易乱（H5 容器会停在跳过去的页面），直接重启最稳
-    restart_app(d, "跨 App 任务返回")
-    return open_coin_page(d) and open_energy_panel(d)
+    # 先保留淘宝进程返回，避免每次跨应用都重新加载整个活动。
+    start_taobao(d)
+    return back_to_panel(d)
 
 
 # 跨 App 任务在淘宝里先落一个中间页，页面上有「打开XXApp」这类按钮
-OPEN_APP_LABELS = ["打开百度App", "打开App", "打开应用", "立即打开", "去打开", "下载并打开", "打开看看"]
+OPEN_APP_LABELS = ["打开百度App", "打开App", "打开应用", "立即打开", "去打开", "打开看看", "去赚能量"]
 
 _INSTALLED_CACHE = {}
 
@@ -228,7 +281,7 @@ def wait_jump(d, timeout=12):
             return "dialog"
         pkg, _ = current_app(d)
         if pkg and pkg != TB_APP:
-            return "app"
+            return "app" if pkg in APP_PACKAGES.values() else "unexpected"
         xml = dump_xml(d, retries=1)
         root = ET.fromstring(xml)
         for label in OPEN_APP_LABELS:
@@ -262,6 +315,12 @@ def handle_modals(d, xml=None):
     """处理挡在页面上的浮层；返回是否点掉了什么"""
     xml = xml if xml is not None else dump_xml(d, retries=1)
     root = ET.fromstring(xml)
+    if find_nodes(root, text="送你能量最高"):
+        close = find_nodes(root, text="关闭", cls="Button")
+        if close and tap_node(d, close[-1]):
+            log("关闭挡住活动页的能量推荐弹窗")
+            time.sleep(0.5)
+            return True
     for label in MODAL_LABELS:
         for node in find_nodes(root, text=label):
             if tap_node(d, node):
@@ -295,9 +354,9 @@ def on_coin_page(xml):
     return ("赚金币" in xml) and ("赚能量" in xml) and (RACE_TXT in xml)
 
 
-def mute(d):
+def mute(d, xml=None):
     """关掉活动页音效（按钮文案是「关闭音效」，关掉后会变成「开启音效」）"""
-    xml = dump_xml(d, retries=1)
+    xml = xml if xml is not None else dump_xml(d, retries=1)
     root = ET.fromstring(xml)
     for node in find_nodes(root, text="关闭音效"):
         if tap_node(d, node):
@@ -307,9 +366,9 @@ def mute(d):
     return False
 
 
-def mute_panel(d):
+def mute_panel(d, xml=None):
     """任务面板里还有一个独立的「音效」开关，按滑块位置判断开关状态"""
-    xml = dump_xml(d, retries=1)
+    xml = xml if xml is not None else dump_xml(d, retries=1)
     if "音效" not in xml:
         return False
     root = ET.fromstring(xml)
@@ -356,9 +415,11 @@ def restart_app(d, why=""):
 def open_coin_page(d):
     for attempt in range(6):
         xml = dump_xml(d)
+        if handle_modals(d, xml):
+            continue
         if on_coin_page(xml):
             log("已在淘金币活动页")
-            mute(d)
+            mute(d, xml)
             return True
         root = ET.fromstring(xml)
         if tap_skip(d, xml):
@@ -374,13 +435,14 @@ def open_coin_page(d):
                 loading_xml = dump_xml(d, retries=1)
                 if on_coin_page(loading_xml):
                     log("已进入淘金币活动页")
-                    mute(d)
+                    mute(d, loading_xml)
                     return True
                 tap_skip(d, loading_xml)
                 time.sleep(2)
             continue
         if COIN_PAGE_TXT in xml or "赚能量" in xml:
-            restart_app(d, "活动页按钮节点缺失")
+            log("  等待活动页按钮加载")
+            time.sleep(1)
             continue
         pkg, _ = current_app(d)
         if pkg != TB_APP:
@@ -393,32 +455,42 @@ def open_coin_page(d):
 
 
 def open_energy_panel(d):
-    ad_tries = 0
-    ok = False
-    for _ in range(6):
+    for attempt in range(8):
         xml = dump_xml(d)
-        if PANEL_TITLE in xml:
-            ok = True
-            break
+        root = ET.fromstring(xml)
         if handle_modals(d, xml):
             continue
-        if ad_tries < 2 and close_ad(d, xml):
-            ad_tries += 1
+        if task_panel(root) is not None:
+            mute_panel(d, xml)
+            return True
+        if current_app(d)[0] != TB_APP:
+            start_taobao(d)
             continue
-        root = ET.fromstring(xml)
         btns = find_nodes(root, rid=ENERGY_RID) or find_nodes(root, text="赚能量")
         if btns:
-            log("点击「赚能量」")
-            tap_node(d, btns[0])
-            time.sleep(8)
+            if attempt in (0, 4):
+                log("点击「赚能量」")
+                tap_node(d, btns[0])
+            time.sleep(0.6)
+            continue
+        if close_ad(d, xml):
             continue
         if not open_coin_page(d):
             return False
-    if not ok:
-        ok = PANEL_TITLE in dump_xml(d, retries=1)
-    if ok:
-        mute_panel(d)
-    return ok
+    log("任务面板未就绪，保留当前页面")
+    return False
+
+
+def task_panel(root):
+    """定位真正的任务面板，排除同一 WebView 内被遮住的底层内容。"""
+    pm = parent_map(root)
+    for title in reversed(find_nodes(root, text=PANEL_TITLE)):
+        panel = title
+        while panel is not None and panel.get("class") != "android.webkit.WebView":
+            if find_nodes(panel, text="累计任务奖励"):
+                return panel
+            panel = pm.get(panel)
+    return None
 
 
 def panel_rows(d, xml=None):
@@ -427,17 +499,58 @@ def panel_rows(d, xml=None):
     if PANEL_TITLE not in xml:
         return []
     root = ET.fromstring(xml)
-    pm = {}
-    for p in root.iter():
-        for c in p:
-            pm[c] = p
+    panel = task_panel(root)
+    if panel is None:
+        return []
+    pm = parent_map(panel)
+    pb = parse_bounds(panel)
     rows = []
-    for btn in find_nodes(root, text="去完成", cls="Button"):
+    for btn in find_nodes(panel, text="去完成", cls="Button"):
+        b = parse_bounds(btn)
+        if btn.get("visible-to-user") == "false" or not b:
+            continue
+        if pb and not (pb[0] <= (b[0]+b[2])/2 <= pb[2] and pb[1] <= (b[1]+b[3])/2 < pb[3]):
+            continue
         p = pm.get(btn)
         texts = [(t.get("text") or "").strip() for t in p.iter()
                  if (t.get("class") or "").endswith("TextView") and (t.get("text") or "").strip()] if p is not None else []
         rows.append({"name": max(texts, key=len) if texts else "", "node": btn})
     return rows
+
+
+def panel_progress(xml):
+    panel = task_panel(ET.fromstring(xml))
+    if panel is not None:
+        for node in panel.iter():
+            m = re.fullmatch(r"\s*(\d+)\s*/\s*50\s*", node.get("text") or "")
+            if m:
+                return int(m.group(1))
+    return None
+
+
+def click_task(d, key):
+    if current_app(d)[0] != TB_APP:
+        return False
+    rows = panel_rows(d)
+    row = next((r for r in rows if task_key(r["name"]) == key), None)
+    return bool(row and tap_node(d, row["node"]))
+
+
+def check_task_progress(d, key, before, cumulative_before):
+    current = None
+    for attempt in range(3):
+        xml = dump_xml(d, retries=1)
+        row = next((r for r in panel_rows(d, xml) if task_key(r["name"]) == key), None)
+        current = progress_of(row["name"])[0] if row else None
+        cumulative = panel_progress(xml)
+        if cumulative_before is not None and cumulative is not None:
+            if cumulative > cumulative_before:
+                return True, current if current is not None and current > before else None
+        elif current is not None and current > before:
+            return True, current
+        if attempt < 2:
+            time.sleep(0.7)
+    return False, current
 
 
 def close_panel(d):
@@ -454,54 +567,55 @@ def close_panel(d):
 
 
 def ensure_rows(d):
-    """拿到任务行；拿不到就按 清浮层 -> 关面板重开 -> 重启 的顺序自愈"""
-    for attempt in range(5):
+    """优先复用当前面板；有限恢复失败后保留现场，不循环重启。"""
+    for attempt in range(3):
         xml = dump_xml(d)
         rows = panel_rows(d, xml)
         if rows:
             return rows
         if handle_modals(d, xml):
             continue
-        if PANEL_TITLE in xml:
-            log("  面板在，但任务行取不到，关闭重开")
-            close_panel(d)
-            continue
+        if task_panel(ET.fromstring(xml)) is not None:
+            return []
         if on_coin_page(xml):
             open_energy_panel(d)
             continue
-        if not restart_app(d, "取不到任务面板"):
-            break
-        if not open_coin_page(d) or not open_energy_panel(d):
-            break
-    return panel_rows(d)
+        if back_to_panel(d):
+            continue
+    log("无法恢复任务面板，停止本轮，避免反复重启")
+    return []
 
 
 # ---------------------------------------------------------------- 做任务
 
 def progress_of(name):
-    m = re.search(r"\((\d+)/(\d+)\)", name)
+    m = re.search(r"[（(]\s*(\d+)\s*/\s*(\d+)\s*[）)]", name)
     return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
 
 
 def task_key(name):
-    return re.sub(r"\(\d+/\d+\)", "", name).strip()
+    return re.split(r"[（(]\s*\d+\s*/\s*\d+\s*[）)]", name, maxsplit=1)[0].strip()
 
 
 def dwell_seconds(task_name):
-    """任务要求浏览多久：文案里写「浏览15秒 / 浏览5秒」，兜底 12 秒"""
-    if "15秒" in task_name:
-        return 16
-    if "5秒" in task_name:
-        return 7
-    if "3秒" in task_name:
-        return 5
-    return 12
+    """解析秒/s 文案，增加 2 秒余量，未标时长时停留 17 秒。"""
+    m = re.search(r"(\d+)\s*(?:秒|s\b|s(?=得))", task_name, re.I)
+    return int(m.group(1)) + 2 if m else 17
 
 
 def browse(d, task_name):
     """任务页停留够时长；搜索类任务先搜索再逛"""
     duration = dwell_seconds(task_name)
+    if current_app(d)[0] != TB_APP:
+        log("浏览暂停：前台已离开淘宝")
+        return False
     xml = dump_xml(d, retries=2)
+    if task_panel(ET.fromstring(xml)) is not None:
+        time.sleep(0.8)
+        xml = dump_xml(d, retries=1)
+        if task_panel(ET.fromstring(xml)) is not None:
+            log("任务页未打开，不在任务面板内执行浏览手势")
+            return False
     root = ET.fromstring(xml)
     edits = find_nodes(root, cls="EditText")
     if edits and "搜一搜" in task_name:
@@ -509,54 +623,52 @@ def browse(d, task_name):
         log(f"  搜索：{keyword}")
         tap_node(d, edits[0])
         time.sleep(1.2)
-        # 走 uiautomator2 的输入法通道（必要时会自动装 AdbKeyboard，中文也能打）；
-        # 跑完在 main 的 finally 里会把默认输入法切回你原来的那个。
-        d.send_keys(keyword)
+        # 搜索词只用英文，走系统 input 通道，不安装或切换输入法。
+        d.shell(["input", "text", keyword])
         time.sleep(1.5)
-        for btn in find_nodes(root, cls="Button", contains="搜索"):
+        root = ET.fromstring(dump_xml(d, retries=1))
+        for btn in find_nodes(root, contains="搜索"):
             tap_node(d, btn)
             break
         time.sleep(4)
 
     w, h = d.window_size()
-    start = time.time()
-    while time.time() - start < duration:
-        x1 = random.randint(w // 6, w // 2)
-        y1 = random.randint(h // 2, h - h // 4)
-        d.swipe(x1, y1, random.randint(x1 - 120, x1), random.randint(200, y1 - 300),
-                random.uniform(0.4, 1))
-        time.sleep(random.uniform(1.2, 2.0))
+    start = time.monotonic()
+    while time.monotonic() - start < duration:
+        if current_app(d)[0] != TB_APP:
+            log("停止手势：前台已离开淘宝")
+            return False
+        if not swipe_in_app(d, w // 2, int(h * 0.72), w // 2, int(h * 0.46), 0.4):
+            return False
+        time.sleep(2.5)
+    return True
 
 
 def back_to_panel(d):
     """按返回键回到任务面板，最多 5 次"""
-    for _ in range(5):
-        xml = dump_xml(d, retries=2)
-        if PANEL_TITLE in xml:
-            return True
+    for _ in range(4):
         pkg, _ = current_app(d)
-        if pkg and pkg != TB_APP:
+        if pkg != TB_APP:
+            log(f"前台离开淘宝（{pkg}），仅拉回淘宝，不在外部页面执行手势")
             start_taobao(d)
             continue
+        xml = dump_xml(d, retries=2)
+        if task_panel(ET.fromstring(xml)) is not None:
+            return True
+        if on_coin_page(xml):
+            return open_energy_panel(d)
         d.press("back")
-        time.sleep(1.5)
-    return PANEL_TITLE in dump_xml(d, retries=1)
+        time.sleep(0.7)
+    return False
 
 
 def claim_rewards(d):
-    """领取累计任务奖励（20 次 / 50 次那几格变可领时）"""
+    """只领取当前任务面板内 5 / 20 / 50 次的累计奖励。"""
     xml = dump_xml(d, retries=1)
     if PANEL_TITLE not in xml:
         return
     root = ET.fromstring(xml)
-    titles = find_nodes(root, text=PANEL_TITLE)
-    if not titles:
-        return
-    pm = parent_map(root)
-    panel = titles[0]
-    # WebView 还会暴露被面板遮住的商品页；只在当前任务面板内领奖。
-    while panel is not None and not find_nodes(panel, text="累计任务奖励"):
-        panel = pm.get(panel)
+    panel = task_panel(root)
     if panel is None:
         return
     for node in find_nodes(panel, contains="领取", cls="Button"):
@@ -575,11 +687,19 @@ def pick_task(d, rows, failed, logged_missing, attempted):
         name = row["name"]
         key = task_key(name)
         if any(k in name for k in SKIP_KEYWORDS):
+            RUN_REPORT.setdefault("skipped", {})[key] = "邀请/付费/预约/答题等需单独处理的任务"
+            continue
+        if not ALLOW_APP_JUMPS and any(k in name for k in APP_PACKAGES):
+            RUN_REPORT.setdefault("skipped", {})[key] = "跨 App 任务默认关闭"
+            continue
+        if any(k in name and pkg in BLOCKED_APPS for k, pkg in APP_PACKAGES.items()):
+            RUN_REPORT.setdefault("skipped", {})[key] = "目标 App 需要先登录"
             continue
         cur, total = progress_of(name)
         if total and cur >= total:
             continue
         if failed.get(key, 0) >= 2:
+            RUN_REPORT.setdefault("skipped", {})[key] = "连续两次未确认记账或点击失败"
             continue
         miss = missing_app(d, name)
         if miss:
@@ -598,73 +718,78 @@ def do_tasks(d, max_tasks=0):
     attempted = {}
     failed = {}
     logged_missing = set()
-    while True:
+    trials = RUN_REPORT.setdefault("tasks", [])
+    while len(trials) < 100:
         if max_tasks and done >= max_tasks:
-            log(f"到达 --max-tasks {max_tasks}，停止")
+            log(f"已确认记账 {done} 次，到达 --max-tasks {max_tasks}，停止")
             break
         rows = ensure_rows(d)
-        if not rows:
-            log("取不到任务行，结束任务循环")
-            break
-        mute(d)  # 页面每次重载音效都会回到「开」，每轮顺手再确认一次（没有就什么也不做）
-
         candidate = pick_task(d, rows, failed, logged_missing, attempted)
-
         if candidate is None:
-            # 可能还有没露出来的任务，往下翻两次再决定
-            for _ in range(2):
-                if scroll_panel(d):
+            for _ in range(8):
+                if not scroll_panel(d):
                     break
-            rows = ensure_rows(d)
-            candidate = pick_task(d, rows, failed, logged_missing, attempted)
+                rows = panel_rows(d)
+                candidate = pick_task(d, rows, failed, logged_missing, attempted)
+                if candidate is not None:
+                    break
             if candidate is None:
-                log("可见任务都做完/跳过了")
+                log("本轮可执行任务已处理完；跳过和未记账原因见运行报告")
                 break
-
         name = candidate["name"]
         key = task_key(name)
         attempted[key] = attempted.get(key, 0) + 1
         before = progress_of(name)[0]
         total = progress_of(name)[1]
-        log(f"[{done + 1}] {name}" + (f"  还差 {total - before} 次" if total else ""))
-        tap_node(d, candidate["node"])
-        time.sleep(4)
-        jump_kind = wait_jump(d, timeout=8)
-        if jump_kind:
-            log(f"  这是跨 App 任务（{jump_kind}）")
-            if not jump_out(d, dwell=dwell_seconds(name)):
-                log("  跨 App 任务回来后打不开面板，结束")
-                break
-        else:
-            x2 = dump_xml(d, retries=1)
-            if PANEL_TITLE in x2 and "去完成" in x2:
-                failed[key] = failed.get(key, 0) + 1
-                log(f"  点了没反应（还停在面板），跳过这条（{failed[key]}/2）")
-                continue
-            handle_modals(d)
-            browse(d, name)
-            if not back_to_panel(d):
-                log("  没回到面板")
-                if not ensure_rows(d):
-                    break
-        claim_rewards(d)
-        done += 1
-        # 核对计数有没有涨：页面刷新有延迟，等一下再看；两次没涨就不再碰这条任务
-        time.sleep(2)
-        after_rows = panel_rows(d) or ensure_rows(d)
-        m = next((progress_of(r["name"]) for r in after_rows if task_key(r["name"]) == key), None)
-        if m is not None and m[0] <= before:
+        cumulative_before = panel_progress(dump_xml(d, retries=1))
+        started = time.monotonic()
+        log(f"尝试 {len(trials)+1}：{name}，已确认 {done} 次")
+        trial = {"task": key, "before": before, "after": None, "verified": False,
+                 "status": "in_progress"}
+        trials.append(trial)
+        if not click_task(d, key):
             failed[key] = failed.get(key, 0) + 1
-            log(f"  计数没变（{m[0]}/{m[1]}），这条任务这次没算上（{failed[key]}/2）")
+            trial.update({"status": "unverified", "reason": "任务行重排或前台变化",
+                          "seconds": round(time.monotonic()-started, 1)})
+            log("  任务行已重排或前台变化，重新读取")
+            continue
+        time.sleep(0.8)
+        is_external = any(k in name for k in APP_PACKAGES)
+        if ALLOW_APP_JUMPS and is_external:
+            kind = wait_jump(d, timeout=4)
+            browsed = kind in ("dialog", "app") and jump_out(d, dwell=dwell_seconds(name))
+        else:
+            browsed = browse(d, name)
+        returned = back_to_panel(d)
+        verified, after = check_task_progress(d, key, before, cumulative_before) if returned else (False, None)
+        trial.update({"after": after, "verified": verified, "browsed": bool(browsed),
+                      "status": "verified" if verified else "unverified",
+                      "seconds": round(time.monotonic()-started, 1)})
+        if verified:
+            done += 1
+            detail = f"{key} {before} → {after}" if after is not None else "累计任务进度已增加，单行重排不用于计数"
+            log(f"  已确认记账：{detail}，本轮累计 {done} 次")
+            claim_rewards(d)
+        else:
+            failed[key] = failed.get(key, 0) + 1
+            log(f"  未确认记账，不计入完成数（{failed[key]}/2）")
+        if not returned:
+            RUN_REPORT["stop_reason"] = "任务面板恢复失败"
+            log("未能返回任务面板，保留现场并停止")
+            break
+    RUN_REPORT["verified"] = done
     return done
 
 
 def scroll_panel(d):
     """面板里上滑，看有没有新任务冒出来"""
     before = {task_key(r["name"]) for r in panel_rows(d)}
+    if current_app(d)[0] != TB_APP:
+        return False
     w, h = d.window_size()
-    d.swipe(w // 2, int(h * 0.82), w // 2, int(h * 0.4), 0.6)
-    time.sleep(3)
+    if not swipe_in_app(d, w // 2, int(h * 0.82), w // 2, int(h * 0.4), 0.6):
+        return False
+    time.sleep(0.7)
     after = {task_key(r["name"]) for r in panel_rows(d)}
     return bool(after - before)
 
@@ -674,33 +799,48 @@ def scroll_panel(d):
 def do_race(d, min_energy=20):
     """长按「升级赛车拿钱」把能量换成抵金；每轮会冒出「解锁新车轮/尾翼」浮层"""
     last_energy = None
-    for _ in range(15):
+    stuck = 0
+    race = RUN_REPORT.setdefault("race", {"before": None, "after": None, "holds": 0})
+    for _ in range(100):
+        if current_app(d)[0] != TB_APP:
+            race["stop_reason"] = "前台已离开淘宝"
+            break
         xml = dump_xml(d)
+        if task_panel(ET.fromstring(xml)) is not None:
+            close_panel(d)
+            continue
         if handle_modals(d, xml):
             continue
         root = ET.fromstring(xml)
         btns = find_nodes(root, contains=RACE_TXT)
         if not btns:
             log("找不到「升级赛车拿钱」，结束赛车")
-            return
+            race["stop_reason"] = "找不到赛车按钮"
+            break
         text = btns[0].get("text") or ""
         m = re.search(r"剩余\s*(\d+)\s*能量", text)
         energy = int(m.group(1)) if m else -1
+        if race["before"] is None and energy >= 0:
+            race["before"] = energy
+        race["after"] = energy
         log(f"赛车：剩余 {energy} 能量")
         if energy < min_energy:
+            race["stop_reason"] = "能量已用尽或不足一次升级" if energy >= 0 else "无法读取剩余能量"
             break
         if energy == last_energy:
-            log("  能量没有变化，这轮长按没生效，结束赛车")
-            break
+            stuck += 1
+            if stuck >= 3:
+                race["stop_reason"] = "连续三次长按能量未下降"
+                break
+        else:
+            stuck = 0
         last_energy = energy
         c = center(btns[0])
         if not c:
             break
         d.long_click(c[0], c[1], duration=4)
-        time.sleep(6)
-        handle_modals(d)
-        if PANEL_TITLE in dump_xml(d, retries=1):
-            close_panel(d)
+        race["holds"] += 1
+        time.sleep(1.5)
 
 
 # ---------------------------------------------------------------- 输入法还原
@@ -751,21 +891,57 @@ def restore_ime(d):
 
 # ---------------------------------------------------------------- main
 
+def start_run():
+    global LOG_FILE, RESTARTS
+    RESTARTS = 0
+    BLOCKED_APPS.clear()
+    RUN_REPORT.clear()
+    RUN_REPORT.update({"run_id": time.strftime("%Y%m%d-%H%M%S"), "tasks": [], "skipped": {}})
+    folder = Path(__file__).resolve().parent / "logs"
+    folder.mkdir(exist_ok=True)
+    LOG_FILE = (folder / (RUN_REPORT["run_id"] + ".log")).open("a", encoding="utf-8")
+
+
+def save_run_report(started):
+    global LOG_FILE
+    RUN_REPORT["seconds"] = round(time.monotonic() - started, 1)
+    RUN_REPORT["restarts"] = RESTARTS
+    RUN_REPORT["verified"] = sum(t["verified"] for t in RUN_REPORT.get("tasks", []))
+    error = sys.exc_info()[1]
+    RUN_REPORT["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else ("error" if error else "finished")
+    if error:
+        RUN_REPORT["error"] = str(error)
+    folder = Path(__file__).resolve().parent
+    body = json.dumps(RUN_REPORT, ensure_ascii=False, indent=2)
+    (folder / "last-run.json").write_text(body, encoding="utf-8")
+    (folder / "logs" / (RUN_REPORT["run_id"] + ".json")).write_text(body, encoding="utf-8")
+    log(f"运行汇总：尝试 {len(RUN_REPORT.get('tasks', []))} 次，确认记账 {RUN_REPORT['verified']} 次，"
+        f"重启 {RESTARTS} 次，用时 {RUN_REPORT['seconds']} 秒；报告：last-run.json")
+    if LOG_FILE is not None:
+        LOG_FILE.close()
+        LOG_FILE = None
+
+
 def main():
+    global ALLOW_APP_JUMPS
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-tasks", type=int, default=0, help="最多做几个任务（0=不限）")
     parser.add_argument("--skip-race", action="store_true", help="不做升级赛车")
     parser.add_argument("--race-only", action="store_true", help="只把能量拿去升级赛车，不做任务")
     parser.add_argument("--open-only", action="store_true", help="只打开活动页，不做任务")
     parser.add_argument("--serial", default="", help="设备序列号")
+    parser.add_argument("--allow-app-jumps", action="store_true", help="启用跨 App 任务；默认只处理淘宝内任务")
     args = parser.parse_args()
-
-    d = u2.connect(args.serial) if args.serial else u2.connect()
-    log(f"已连接设备：{d.serial}")
-    started = time.time()
-    remember_ime(d)
+    if args.max_tasks < 0:
+        parser.error("--max-tasks 不能小于 0")
+    ALLOW_APP_JUMPS = args.allow_app_jumps
+    start_run()
+    started = time.monotonic()
+    d = None
     try:
-        restart_app(d, "开场重置页面")
+        d = u2.connect(args.serial) if args.serial else u2.connect()
+        log(f"已连接设备：{d.serial}；按真实进度统计任务")
+        remember_ime(d)
         if not open_coin_page(d):
             raise SystemExit("进不去淘金币活动页")
         if args.open_only:
@@ -775,21 +951,32 @@ def main():
         if not args.race_only:
             if not open_energy_panel(d):
                 raise SystemExit("打不开「做任务赚能量」面板")
+            RUN_REPORT["cumulative_before"] = panel_progress(dump_xml(d, retries=1))
             done = do_tasks(d, max_tasks=args.max_tasks)
-            log(f"共完成 {done} 个能量任务")
-            close_panel(d)
+            RUN_REPORT["cumulative_after"] = panel_progress(dump_xml(d, retries=1))
+            log(f"共确认记账 {done} 次能量任务")
+            if RUN_REPORT.get("stop_reason"):
+                raise SystemExit("任务尚未处理完，请检查报告和当前页面；未自动进入赛车")
+            if not args.skip_race:
+                close_panel(d)
 
         if not args.skip_race:
             do_race(d)
 
-        minutes, seconds = divmod(int(time.time() - started), 60)
-        log(f"共耗时: {minutes} 分钟 {seconds} 秒，重启淘宝 {RESTARTS} 次")
     finally:
         try:
-            restore_ime(d)
+            if d is not None:
+                restore_ime(d)
         except Exception as exc:
             log(f"输入法还原未完成，请重新连接手机后核对输入法：{exc}")
+        save_run_report(started)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        log("已停止，已保存本轮报告")
+    except Exception as exc:
+        log(f"运行停止：{exc}")
+        raise SystemExit(1)

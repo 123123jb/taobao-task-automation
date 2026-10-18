@@ -59,6 +59,11 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(run.call_args.args[0][-5:], ["--serial", "phone-b", "--max-tasks", "3", "--skip-race"])
 
+    def test_cross_app_opt_in_is_forwarded(self):
+        result, run = self.invoke(["all", "--allow-app-jumps"], ["phone-a"])
+        self.assertEqual(result, 0)
+        self.assertIn('--allow-app-jumps', run.call_args.args[0])
+
     def test_adb_failure_returns_error_without_starting_automation(self):
         with patch.object(launcher.adbutils.adb, "device_list", side_effect=OSError("ADB unavailable")), \
                 patch.object(launcher.subprocess, "run") as run, \
