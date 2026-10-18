@@ -26,6 +26,41 @@ def panel(current=0, cumulative=5):
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_browsing_stops_at_manual_verification(self):
+        d = Mock()
+        with patch.object(a, 'current_app', return_value=(a.TB_APP, '.Search')), \
+                patch.object(a, 'dump_xml', return_value='<hierarchy><node text="请拖动下方滑块完成验证" /></hierarchy>'):
+            self.assertFalse(a.browse(d, '搜一搜喜欢的宝贝'))
+        d.swipe.assert_not_called()
+        d.shell.assert_not_called()
+
+    def test_visual_reader_requires_button_label_and_balance(self):
+        from PIL import Image, ImageDraw
+        screenshot = Image.new('RGB', (1080, 2400), 'white')
+        ImageDraw.Draw(screenshot).rectangle((200, 820, 880, 990), fill=(255, 220, 20))
+        d = Mock()
+        d.screenshot.return_value = screenshot
+        responses = [Mock(returncode=0, stdout='升级赛车拿钱\n剩余19840能量'.encode()),
+                     Mock(returncode=0, stdout='赚能量'.encode())]
+        with patch.object(a.shutil, 'which', return_value='tesseract'), \
+                patch.object(a, 'current_app', return_value=(a.TB_APP, '.Race')), \
+                patch.object(a.subprocess, 'run', side_effect=responses):
+            x = a.visual_coin_xml(d)
+        self.assertTrue(a.on_coin_page(x))
+        self.assertIn('剩余 19840 能量', x)
+        self.assertIn(a.ENERGY_RID, x)
+        with patch.object(a.shutil, 'which', return_value='tesseract'), \
+                patch.object(a, 'current_app', return_value=(a.TB_APP, '.Race')), \
+                patch.object(a.subprocess, 'run', return_value=Mock(returncode=0, stdout=b'19840')):
+            self.assertIsNone(a.visual_coin_xml(d))
+
+    def test_visual_reader_does_not_read_settings(self):
+        d = Mock()
+        with patch.object(a.shutil, 'which', return_value='tesseract'), \
+                patch.object(a, 'current_app', return_value=('com.android.settings', '.Settings')):
+            self.assertIsNone(a.visual_coin_xml(d))
+        d.screenshot.assert_not_called()
+
     def test_race_retries_a_temporarily_missing_button(self):
         race = '<hierarchy><node text="升级赛车拿钱 剩余 0 能量" bounds="[200,900][900,1100]" /></hierarchy>'
         d = Mock()
@@ -69,7 +104,8 @@ class ReliabilityTests(unittest.TestCase):
         ready = shell.replace('淘金币首页', '淘金币首页 赚金币 赚能量 升级赛车拿钱')
         d = Mock()
         d.dump_hierarchy.side_effect = [shell, ready]
-        with patch.object(a.time, 'sleep'), patch.dict(a.RUN_REPORT, {'tree_resets': 0}):
+        with patch.object(a.time, 'sleep'), patch.dict(a.RUN_REPORT, {'tree_resets': 0}), \
+                patch.object(a, 'visual_coin_xml', return_value=None):
             self.assertIn('赚能量', a.dump_xml(d))
         d.stop_uiautomator.assert_called_once()
         d.start_uiautomator.assert_called_once()

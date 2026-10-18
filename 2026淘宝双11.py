@@ -15,10 +15,9 @@
 
 实现要点
 --------
-1. 元素定位全部用 dump_hierarchy 解析无障碍树 + 按坐标点击。
-   部分 WebView 上 `.exists` / `.count` 会给出互相矛盾的结果，因此统一解析界面树。
-2. 活动页是 WebView，无障碍树偶尔会整片消失（只剩 70 多个壳节点）。检测到这种
-   情况就依次尝试：关闭面板重开 -> 重启淘宝 -> 重新进活动页。
+1. 优先解析无障碍树并按坐标点击，避免 WebView 元素查询结果互相矛盾。
+2. 界面树只剩外壳时，使用可选的本机 OCR 核对赛车标签、余额及黄色按钮；
+   识别失败时有限重连读取服务，不反复重启淘宝。
 3. 默认跳过跨应用任务；显式传入 --allow-app-jumps 后处理已安装的目标应用。
 
 运行
@@ -31,10 +30,13 @@
 前置：adb 可用、手机已连接并登录淘宝。
 """
 import argparse
+import io
 import json
 from pathlib import Path
 import random
 import re
+import shutil
+import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -95,6 +97,62 @@ def log(*args):
 
 # ---------------------------------------------------------------- 无障碍树工具
 
+def visual_coin_xml(d):
+    """仅为空壳活动页补读截图，确认标签、余额及黄色按钮后才提供坐标。"""
+    executable = shutil.which("tesseract")
+    if not executable or current_app(d)[0] != TB_APP:
+        return None
+    screenshot = d.screenshot().convert("RGB")
+    w, h = screenshot.size
+    yellow_rows = []
+    for y in range(int(h*.25), int(h*.55), 4):
+        row = [screenshot.getpixel((x, y)) for x in range(int(w*.25), int(w*.75), 16)]
+        if sum(r > 180 and g > 140 and b < 130 for r, g, b in row) > len(row)*.6:
+            yellow_rows.append(y)
+    bands = []
+    for y in yellow_rows:
+        if not bands or y-bands[-1][-1] > h*.025:
+            bands.append([])
+        bands[-1].append(y)
+    bands = [b for b in bands if h*.03 < b[-1]-b[0] < h*.12]
+    if not bands:
+        return None
+    band = max(bands, key=len)
+    bounds = (int(w*.19), max(0, band[0]-4), int(w*.81), min(h, band[-1]+5))
+    crop = screenshot.crop(bounds)
+    sampled = crop.resize((50, 20))
+    pixels = [sampled.getpixel((x, y)) for x in range(50) for y in range(20)]
+    if sum(r > 180 and g > 140 and b < 130 for r, g, b in pixels) < len(pixels)*.5:
+        return None
+
+    def read(region):
+        buffer = io.BytesIO()
+        region.save(buffer, format="PNG")
+        result = subprocess.run([executable, "stdin", "stdout", "-l", "chi_sim+eng", "--psm", "6"],
+                                input=buffer.getvalue(), capture_output=True, timeout=6,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return re.sub(r"\s+", "", result.stdout.decode("utf-8")) if result.returncode == 0 else ""
+
+    try:
+        text = read(crop)
+        energy = re.search(r"剩余(\d+)能量", text)
+        if RACE_TXT not in text or not energy:
+            return None
+        root = ET.Element("hierarchy")
+        ET.SubElement(root, "node", text=COIN_PAGE_TXT)
+        ET.SubElement(root, "node", text=f"{RACE_TXT} 剩余 {energy.group(1)} 能量",
+                      bounds=f"[{bounds[0]},{bounds[1]}][{bounds[2]},{bounds[3]}]", clickable="true")
+        side = (int(w*.83), bounds[1], w, bounds[3])
+        if "赚能量" in read(screenshot.crop(side)):
+            ET.SubElement(root, "node", text="赚能量", **{"resource-id": ENERGY_RID},
+                          bounds=f"[{side[0]},{side[1]}][{side[2]},{side[3]}]", clickable="true")
+        RUN_REPORT["visual_reads"] = RUN_REPORT.get("visual_reads", 0) + 1
+        return ET.tostring(root, encoding="unicode")
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
+        log(f"截图备用识别失败：{exc}")
+        return None
+
+
 def dump_xml(d, retries=3):
     xml = ""
     for _ in range(retries):
@@ -103,8 +161,12 @@ def dump_xml(d, retries=3):
         except Exception as e:
             log(f"  取界面失败: {e}")
             xml = ""
-        if (COIN_PAGE_TXT in xml and xml.count("<node ") < 120 and not on_coin_page(xml)
-                and RUN_REPORT.get("tree_resets", 0) < 2):
+        shell_only = COIN_PAGE_TXT in xml and xml.count("<node ") < 120 and not on_coin_page(xml)
+        if shell_only:
+            visual = visual_coin_xml(d)
+            if visual:
+                return visual
+        if shell_only and RUN_REPORT.get("tree_resets", 0) < 2:
             RUN_REPORT["tree_resets"] = RUN_REPORT.get("tree_resets", 0) + 1
             log("活动页只返回外壳，重连界面读取服务，不重启淘宝")
             d.stop_uiautomator()
@@ -351,7 +413,8 @@ def close_ad(d, xml=None):
 
 
 def on_coin_page(xml):
-    return ("赚金币" in xml) and ("赚能量" in xml) and (RACE_TXT in xml)
+    return RACE_TXT in xml and (("赚金币" in xml and "赚能量" in xml) or
+                               (COIN_PAGE_TXT in xml and bool(re.search(r"剩余\s*\d+\s*能量", xml))))
 
 
 def mute(d, xml=None):
@@ -633,6 +696,13 @@ def browse(d, task_name):
         else:
             d.shell(["input", "keyevent", "66"])
         time.sleep(4)
+        xml = dump_xml(d, retries=1)
+
+    if "验证" in xml and any(label in xml for label in ("滑块", "滑动", "拖动")):
+        reason = "搜索触发人工验证，停止浏览手势"
+        RUN_REPORT.setdefault("skipped", {})[task_key(task_name)] = reason
+        log(reason)
+        return False
 
     w, h = d.window_size()
     start = time.monotonic()
