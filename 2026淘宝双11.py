@@ -495,8 +495,16 @@ def browse(d, task_name):
         log(f"  搜索：{keyword}")
         tap_node(d, edits[0])
         time.sleep(1.2)
-        d.send_keys(keyword)
+        # 优先用 adb 的 input text（纯英文，能直接打字）：这样不用装 AdbKeyboard 输入法，
+        # 也就不会把你手机原来的输入法换掉。打不进去再退回 u2 的输入法通道。
+        d.shell(f"input text {keyword}")
         time.sleep(1.2)
+        typed = [n for n in find_nodes(ET.fromstring(dump_xml(d, retries=1)), cls="EditText")
+                 if (n.get("text") or "").strip()]
+        if not typed:
+            log("  输入框还是空的，改用 u2 的输入法通道")
+            d.send_keys(keyword)
+            time.sleep(1.2)
         for btn in find_nodes(root, cls="Button", contains="搜索"):
             tap_node(d, btn)
             break
