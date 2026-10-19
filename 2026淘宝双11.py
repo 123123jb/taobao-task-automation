@@ -377,6 +377,7 @@ def handle_modals(d, xml=None):
     """处理挡在页面上的浮层；返回是否点掉了什么"""
     xml = xml if xml is not None else dump_xml(d, retries=1)
     root = ET.fromstring(xml)
+    pm = parent_map(root)
     if find_nodes(root, text="送你能量最高"):
         close = find_nodes(root, text="关闭", cls="Button")
         if close and tap_node(d, close[-1]):
@@ -385,7 +386,9 @@ def handle_modals(d, xml=None):
             return True
     for label in MODAL_LABELS:
         for node in find_nodes(root, text=label):
-            if tap_node(d, node):
+            parent = pm.get(node)
+            target = parent if parent is not None and parent.get("clickable") == "true" else node
+            if tap_node(d, target):
                 log(f"  处理浮层: {label}")
                 time.sleep(2.5)
                 return True

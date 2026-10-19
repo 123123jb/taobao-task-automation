@@ -1,4 +1,4 @@
-# 淘宝双11 淘金币活动自动化（2026）
+# 淘宝双十一活动自动刷能量做任务
 
 用 Python / uiautomator2 操作已登录的安卓手机，完成能量任务、领取累计奖励，再长按“升级赛车拿钱”消耗能量。
 
@@ -65,6 +65,8 @@ python 2026淘宝双11.py --open-only                    # 只打开活动页
 & '.\.venv\Scripts\python.exe' -m pip check
 ```
 
-本机真机验收见 [LOCAL_SETUP.md](LOCAL_SETUP.md)。截图、界面 XML、日志和运行报告仅留在本机，已被 Git 忽略。
+运行与验证记录见 [LOCAL_SETUP.md](LOCAL_SETUP.md)。截图、界面 XML、日志和运行报告仅留在本机，不上传 GitHub。
 
 本项目用于学习自动化；活动规则和界面变化会影响可用性，使用时请遵守平台规则。
+
+基于 [why-au/taobao-task-automation](https://github.com/why-au/taobao-task-automation) 整理和改进。

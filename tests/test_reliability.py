@@ -26,6 +26,13 @@ def panel(current=0, cumulative=5):
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_modal_uses_clickable_parent_of_text_label(self):
+        x = '<hierarchy><node clickable="true" bounds="[200,900][900,1100]"><node text="确认选择" bounds="[300,920][500,960]" /></node></hierarchy>'
+        d = Mock()
+        with patch.object(a.time, 'sleep'):
+            self.assertTrue(a.handle_modals(d, x))
+        d.click.assert_called_once_with(550, 1000)
+
     def test_browsing_stops_at_manual_verification(self):
         d = Mock()
         with patch.object(a, 'current_app', return_value=(a.TB_APP, '.Search')), \
