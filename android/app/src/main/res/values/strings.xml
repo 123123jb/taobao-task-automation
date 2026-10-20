@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">双十一任务助手</string>
+    <string name="allow_jumps">包含已安装 App 的浏览任务</string>
+    <string name="service_description">仅在你点击开始后，读取任务页面并点击、滑动完成浏览任务。截图仅在本机内存中识别，不上传。点击浮条或通知即可停止；登录、验证和锁屏时停止。需要手机保持解锁。</string>
+</resources>
