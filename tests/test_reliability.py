@@ -167,6 +167,19 @@ class ReliabilityTests(unittest.TestCase):
             verified, _ = a.check_task_progress(Mock(), '好物沉浸看', 3, 5)
         self.assertFalse(verified)
 
+    def test_capped_cumulative_uses_two_consistent_row_reads(self):
+        with patch.object(a, 'dump_xml', return_value=panel(4, 50)) as read, patch.object(a.time, 'sleep'):
+            verified, current = a.check_task_progress(Mock(), '好物沉浸看', 3, 50)
+        self.assertTrue(verified)
+        self.assertEqual(current, 4)
+        self.assertEqual(read.call_count, 2)
+
+    def test_capped_cumulative_does_not_credit_a_transient_reordered_row(self):
+        with patch.object(a, 'dump_xml', side_effect=[panel(4, 50), panel(3, 50), panel(3, 50)]), \
+                patch.object(a.time, 'sleep'):
+            verified, _ = a.check_task_progress(Mock(), '好物沉浸看', 3, 50)
+        self.assertFalse(verified)
+
     def test_foreground_falls_back_when_window_focus_is_temporarily_null(self):
         d = Mock()
         d.shell.return_value.output = ('mCurrentFocus=null\n'

@@ -604,16 +604,20 @@ def click_task(d, key):
 
 def check_task_progress(d, key, before, cumulative_before):
     current = None
+    previous = None
     for attempt in range(3):
         xml = dump_xml(d, retries=1)
         row = next((r for r in panel_rows(d, xml) if task_key(r["name"]) == key), None)
         current = progress_of(row["name"])[0] if row else None
         cumulative = panel_progress(xml)
-        if cumulative_before is not None and cumulative is not None:
+        if cumulative_before is not None and cumulative_before < 50 and cumulative is not None:
             if cumulative > cumulative_before:
                 return True, current if current is not None and current > before else None
         elif current is not None and current > before:
-            return True, current
+            # 满 50 后累计不再增长；用两次一致的单行读数排除列表重排。
+            if cumulative_before != 50 or current == previous:
+                return True, current
+        previous = current
         if attempt < 2:
             time.sleep(0.7)
     return False, current
