@@ -55,6 +55,16 @@ final class Frame {
         for (Node node : nodes) if (node.label().contains(label)) return node;
         return null;
     }
+    Node raceButton() {
+        Node result = null;
+        for (Node node : nodes) {
+            boolean label = visual ? node.label().equals("升级赛车拿钱") : node.label().contains("升级赛车拿钱");
+            if (!label || node.bottom-node.top > height*.18 || node.right<=node.left || node.bottom<=node.top) continue;
+            if (result == null || (long)(node.right-node.left)*(node.bottom-node.top)
+                    < (long)(result.right-result.left)*(result.bottom-result.top)) result=node;
+        }
+        return result;
+    }
     boolean panel() { return exact("做任务赚能量") != null && contains("累计任务奖励") != null; }
 
     private boolean under(int index, int ancestor) {

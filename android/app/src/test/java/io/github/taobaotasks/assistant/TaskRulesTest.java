@@ -36,4 +36,15 @@ public class TaskRulesTest {
         assertTrue(TaskRules.verification("请拖动下方滑块完成验证"));
         assertFalse(TaskRules.verification("浏览15秒"));
     }
+    @Test public void loginFormStopsBeforeTypingOrBrowsing() {
+        assertTrue(TaskRules.needsLogin("手机号码 短信验证码 同意协议并登录"));
+        assertTrue(TaskRules.needsLogin("密码登录"));
+        assertFalse(TaskRules.needsLogin("搜一搜你喜欢的宝贝 浏览5秒"));
+    }
+    @Test public void friendSharingAndNewAccountActionsAreManual() {
+        assertTrue(TaskRules.skip("拉好友领取奖励"));
+        assertTrue(TaskRules.skip("分享给好友(0/1)"));
+        assertTrue(TaskRules.skip("开户领能量"));
+        assertFalse(TaskRules.skip("逛一逛支付宝农场"));
+    }
 }

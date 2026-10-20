@@ -155,6 +155,10 @@ final class ScreenReader implements AutoCloseable {
         });
         boolean delivered = false;
         try { Bitmap bitmap = future.get(8, TimeUnit.SECONDS); delivered = true; return bitmap; }
+        catch (java.util.concurrent.ExecutionException failure) {
+            if (failure.getCause() instanceof TaskRunner.Stop) throw (TaskRunner.Stop)failure.getCause();
+            throw failure;
+        }
         finally {
             synchronized (future) {
                 abandoned.set(true);

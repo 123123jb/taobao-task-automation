@@ -12,6 +12,7 @@ final class TaskRunner {
     private static final Map<String,String> APPS = new LinkedHashMap<>();
     static {
         APPS.put("蚂蚁庄园", "com.eg.android.AlipayGphone"); APPS.put("支付宝", "com.eg.android.AlipayGphone");
+        APPS.put("蚂蚁森林", "com.eg.android.AlipayGphone");
         APPS.put("百度", "com.baidu.searchbox"); APPS.put("闲鱼", "com.taobao.idlefish");
         APPS.put("微博", "com.sina.weibo"); APPS.put("京东", "com.jingdong.app.mall");
         APPS.put("拼多多", "com.xunmeng.pinduoduo"); APPS.put("抖音", "com.ss.android.ugc.aweme");
@@ -146,7 +147,7 @@ final class TaskRunner {
                 if (button != null) { service.tap(first,button); service.pause(1800); first=read(); break; }
             }
         }
-        if (title.contains("搜一搜") || title.contains("搜索")) {
+        if (title.contains("搜")) {
             if (!TaskRules.TAOBAO.equals(first.pkg) || !service.setSearchText("iphone16")) {
                 RunLog.add("搜索框不支持直接输入，保留给手动完成"); return false;
             }
@@ -214,8 +215,7 @@ final class TaskRunner {
         int previous=-1,stuck=0,missing=0,zero=0;
         for (int i=0;i<250;i++) {
             Frame frame=read(); if (dismiss(frame)) continue;
-            Frame.Node button=frame.exact("升级赛车拿钱");
-            if (button==null && !frame.visual) button=frame.contains("升级赛车拿钱");
+            Frame.Node button=frame.raceButton();
             int energy=TaskRules.energy(frame.text());
             if (button==null || energy<0) {
                 if (++missing>=3) throw new Stop("无法确认赛车按钮或余额，请手动打开赛车页；未确认能量耗尽");

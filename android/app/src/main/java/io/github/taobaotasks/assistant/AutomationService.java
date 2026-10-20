@@ -144,16 +144,16 @@ public final class AutomationService extends AccessibilityService {
         if (currentReader == null) throw new InterruptedException();
         Frame result = nativeFrame;
         // A complete native task panel is cheaper and more accurate than OCR.
-        boolean panel = nativeFrame.panel(), race = nativeFrame.contains("升级赛车拿钱") != null;
-        if ((panel && nativeFrame.tasks().isEmpty()) || (race && TaskRules.energy(nativeFrame.text()) < 0)
+        boolean panel = nativeFrame.panel(), race = nativeFrame.raceButton() != null;
+        if ((panel && nativeFrame.tasks().isEmpty()) || (nativeFrame.contains("升级赛车拿钱") != null
+                && (!race || TaskRules.energy(nativeFrame.text()) < 0))
                 || (!panel && !race && (nativeFrame.text().length() < 160 || nativeFrame.contains("淘金币首页") != null))) {
             result = currentReader.read(nativeFrame);
         }
         check(); guard();
         if (!pkg.equals(foreground())) throw new TaskRunner.Stop("识别期间前台已改变，请回到活动页重试");
         if (TaskRules.verification(result.text())) throw new TaskRunner.Stop("出现人工验证，请完成验证后重新开始");
-        if (result.contains("验证码登录") != null || result.contains("密码登录") != null
-                || result.contains("登录后") != null || result.contains("登录/注册") != null) {
+        if (TaskRules.needsLogin(result.text())) {
             throw new TaskRunner.Stop("目标 App 需要登录，请手动登录后重新开始");
         }
         return result;
@@ -212,7 +212,9 @@ public final class AutomationService extends AccessibilityService {
     }
     private boolean setEditable(AccessibilityNodeInfo node, String text, int depth) {
         if (depth > 60) return false;
-        if (node.isEditable() && node.isVisibleToUser()) {
+        boolean search = value(node.getViewIdResourceName()).toLowerCase(java.util.Locale.ROOT).contains("search")
+                || value(node.getHintText()).contains("搜") || value(node.getText()).contains("搜");
+        if (node.isEditable() && node.isVisibleToUser() && !node.isPassword() && search) {
             Bundle args = new Bundle(); args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
             return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
         }

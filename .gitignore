@@ -27,3 +27,5 @@ local.properties
 *.aab
 *.jks
 *.keystore
+.android-signing/
+dist/

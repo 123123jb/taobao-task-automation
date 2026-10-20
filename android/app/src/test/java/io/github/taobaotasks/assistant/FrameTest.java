@@ -48,4 +48,15 @@ public class FrameTest {
         f.nodes.add(node("去完成",0,700,true));
         assertTrue(f.tasks().isEmpty());
     }
+    @Test public void raceButtonRejectsWholePageAccessibilityText() {
+        Frame f = new Frame(TaskRules.TAOBAO,1080,2400,false);
+        f.nodes.add(new Frame.Node("升级赛车拿钱 剩余20能量", "", "", "", -1,0,0,1080,2400,true,false));
+        assertNull(f.raceButton());
+    }
+    @Test public void raceButtonAllowsBalanceInABoundedButton() {
+        Frame f = new Frame(TaskRules.TAOBAO,1080,2400,false);
+        Frame.Node button = new Frame.Node("升级赛车拿钱 剩余20能量", "", "", "", -1,210,720,870,920,true,false);
+        f.nodes.add(button);
+        assertSame(button,f.raceButton());
+    }
 }

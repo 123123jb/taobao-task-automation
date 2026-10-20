@@ -6,8 +6,9 @@ import java.util.regex.Pattern;
 final class TaskRules {
     static final String TAOBAO = "com.taobao.taobao";
     static final Pattern PROGRESS = Pattern.compile("[（(]\\s*(\\d+)\\s*/\\s*(\\d+)\\s*[）)]");
-    private static final String[] SKIP = {"邀请", "助力", "每拉", "积分换", "积分兑", "兑换能量",
-            "充值", "开通", "办卡", "下单", "购买", "预约", "订阅", "答题", "考试", "游戏", "小组件"};
+    private static final String[] SKIP = {"邀请", "助力", "每拉", "拉好友", "拉1人", "拉新", "分享给", "分享好友",
+            "积分换", "积分兑", "兑换能量", "充值", "开通", "办卡", "开户", "付款", "转账",
+            "下单", "购买", "预约", "订阅", "答题", "考试", "游戏", "小组件"};
 
     static int[] progress(String title) {
         Matcher m = PROGRESS.matcher(title);
@@ -38,6 +39,12 @@ final class TaskRules {
 
     static boolean verification(String text) {
         return text.contains("验证") && (text.contains("滑块") || text.contains("滑动") || text.contains("拖动"));
+    }
+
+    static boolean needsLogin(String text) {
+        return text.contains("验证码登录") || text.contains("密码登录") || text.contains("登录后")
+                || text.contains("登录/注册") || (text.contains("登录")
+                && (text.contains("验证码") || text.contains("手机号码") || text.contains("密码")));
     }
 
     static int energy(String text) {
