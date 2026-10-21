@@ -18,3 +18,14 @@ screenshot*.xml
 .idea/
 .vscode/
 .DS_Store
+
+# Android 本地环境与安装产物
+.gradle/
+**/build/
+local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+.android-signing/
+dist/
