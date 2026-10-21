@@ -2,7 +2,7 @@
 
 用 Python / uiautomator2 操作已登录的安卓手机，完成能量任务、领取累计奖励，再长按“升级赛车拿钱”消耗能量。
 
-已新增[安卓独立运行测试版](android/README.md)：安装到手机后通过无障碍服务运行，无需电脑连接。[下载 APK](https://github.com/123123jb/taobao-task-automation/releases/download/v0.1.0-android-alpha1/taobao-task-assistant-0.1.0-alpha1.apk)。目前尚未完成 APK 真机验收，使用范围和安装步骤见安卓说明。
+已新增[安卓独立运行测试版](android/README.md)，但 2026-10-20 真机测试遇到活动面板识别和截图间隔错误，尚未通过完整验收，暂不建议用于日常任务。目前建议使用下面的 Python / ADB 方式。
 
 ## Windows 本机运行
 
