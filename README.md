@@ -1,3 +1,20 @@
+# 本机调试版（2026-10-22）
+
+已修复启动时强制导入 PaddleOCR、截图路径与无效截图递归重试、抖音启动入口解析问题。检测到本机 Tesseract（需 `chi_sim` 和 `eng`）时直接使用它，只需安装 `requirements.txt` 中的 Pillow；没有 Tesseract 时仍可使用原 PaddleOCR 环境。
+
+```powershell
+$env:PYTHONUTF8='1'
+$env:ADBUTILS_ADB_PATH='你的 adb.exe 完整路径'
+python douyin_guaji.py --check --serial 设备序列号
+python douyin_guaji.py --serial 设备序列号
+```
+
+`--check` 仅检查依赖、设备、电量和抖音入口，不操作手机。正式运行前，需按下方原使用方法手动进入直播间。Ctrl+C 停止；出现登录、人工验证、未知前台或中奖领奖时会停止并保留现场。只尝试无需额外付费和公开互动的福袋，跳过评论、粉丝团、钻石与送礼等条件，不自动点赞、发评论、勾选领奖协议或下单。当前修改通过单元测试和设备环境检查，完整直播间流程仍待真机验证。
+
+截图与日志只留本机，不提交仓库。运行回归检查：`python -m unittest discover -s tests -v`。
+
+以下为原项目说明，其中自动评论、人机验证与自动下单等描述不适用于本机调试版。
+
 # 功能展示
 用于在抖音直播间自动挂机参与福袋抽奖，只要手机不关机就能24小时无限连轴转刷福袋  
 一个月即使运气非常差，中10来个奖品还是很轻松的！  

@@ -4,7 +4,7 @@ import sys
 import time
 from PIL import Image
 from datetime import datetime
-from Underlying_Operations import underlying_operations
+from Underlying_Operations import underlying_operations, ManualActionRequired
 import json
 
 """
@@ -337,7 +337,7 @@ class fudai_analyse:
         return False
 
     def browse_videos(self):
-        """在视频推荐首页刷视频，随机点赞留评"""
+        """只浏览视频，不点赞或发送评论。"""
         for i in range(10):
             if not self.check_in_homepage():
                 self.operation.click_back(self.device_id)
@@ -347,30 +347,6 @@ class fudai_analyse:
                 self.operation.delay(2)
                 self.operation.get_screenshot(self.device_id)
                 continue
-            if random.random() < 1 / 2:
-                self.click(990, 1180)  # 点击红心
-                print("点击红心")
-                self.operation.delay(1)
-            if random.random() < 1 / 2:
-                self.click(990, 1380)  # 点击评论
-                print("点击留评")
-                self.operation.delay(2)
-                self.operation.get_screenshot(self.device_id)
-                if self.check_have_comment():
-                    self.click(320, 2180)
-                    self.operation.delay(2)
-                    comment = random.choice(self.video_comments)
-                    print(f"输入评论内容：{comment}")
-                    self.operation.input_text(self.device_id, comment)
-                    self.operation.click_back(self.device_id)
-                    self.operation.delay(2)
-                    self.operation.get_screenshot(self.device_id)
-                    if self.check_can_send_comment():
-                        self.click(940, 2180)
-                        print("点击发送评论")
-                        self.operation.delay(2)
-                        self.operation.click_back(self.device_id)
-                        self.operation.delay(2)
             self.swipe(760, 1600, 760, 800, 200)
             print("上划切换视频")
             self.operation.random_delay(10, 30)
@@ -470,68 +446,10 @@ class fudai_analyse:
         self.operation.delay(1)
 
     def deal_robot_analyse(self):
-        """处理人机校验，包含各种情况
-        
-        处理三种类型的人机验证：
-        1. 滑动图片验证
-        2. 点击图片验证
-        3. 人脸识别验证
-        
-        Returns:
-            bool: 是否成功处理了人机验证
-        """
-        max_swipe_times = 10
-        wait_time = 1800  # 30分钟等待时间
-        
-        def handle_slide_verification():
-            """处理滑动图片验证"""
-            distance = self.check_robot_pic_distance()
-            self.deal_swipe_robot_analyse(distance)
-            self.operation.delay(10)
-            self.operation.get_screenshot(self.device_id)
-            
-        def handle_click_verification():
-            """处理点击图片验证"""
-            print("无法处理图片验证的人机，点击关闭退出验证，等待30分钟")
-            self.click(910, 800)  # 点击关闭
-            self.operation.delay(wait_time)
-            
-        def handle_face_verification():
-            """处理人脸识别验证"""
-            print("无法处理人脸识别验证的人机，点击返回退出验证，等待30分钟")
-            self.operation.click_back(self.device_id)
-            self.operation.delay(2)
-            self.operation.click_back(self.device_id)
-            self.operation.delay(wait_time)
-            
-        # 验证处理映射
-        verification_handlers = {
-            1: handle_slide_verification,
-            2: handle_click_verification,
-            3: handle_face_verification
-        }
-        
-        for swipe_times in range(max_swipe_times):
-            robot_result = self.check_have_robot_analyse()
-            
-            # 如果没有验证，直接返回
-            if not robot_result:
-                return True
-                
-            # 获取对应的处理函数并执行
-            handler = verification_handlers.get(robot_result)
-            if handler:
-                handler()
-                if robot_result in (2, 3):  # 如果是无法处理的验证类型，直接退出
-                    return False
-            else:
-                return False
-                
-        # 如果超过最大尝试次数，按点击验证处理
-        print("无法处理图片验证的人机，点击关闭退出验证，等待30分钟")
-        self.click(910, 800)
-        self.operation.delay(wait_time)
-        return False
+        """遇到人工验证立即停止，不发送验证手势。"""
+        if self.check_have_robot_analyse():
+            raise ManualActionRequired('抖音要求人工验证，请在手机上手动处理后重启脚本')
+        return True
 
     def swipe(self, left_up_x=0, left_up_y=0, right_down_x=1080, right_down_y=1500, steps=200):
         """调整比例后划动屏幕"""
@@ -753,6 +671,23 @@ class fudai_analyse:
         Returns:
             bool: 是否成功参与抽奖
         """
+        self.operation.get_screenshot(self.device_id)
+        top = self.find_fudai_detail_top_y()
+        if top is None or not 800 <= top <= 1700:
+            print('福袋详情未定位，跳过本轮')
+            return False
+        self.cut_pic(0, top, 1080, 2280, '', 'participation_conditions')
+        conditions = self.operation.analyse_pic_word('participation_conditions')
+        if not conditions:
+            print('无法读取参与条件，跳过本轮')
+            return False
+        if any(word in conditions for word in ('验证', '开始检测', '形状相同')):
+            raise ManualActionRequired('参与前出现人工验证，请手动处理')
+        if any(word in conditions for word in ('评论', '粉丝团', '钻石', '送礼', '支付', '开通', '购买', '下单', '关注主播')):
+            print('当前福袋需要额外交互或付费，跳过本轮')
+            self.operation.click_back(self.device_id)
+            self.operation.delay(1)
+            return False
         def close_fudai_detail():
             """关闭福袋详情"""
             self.click(500, 470)
@@ -900,34 +835,9 @@ class fudai_analyse:
         return False
 
     def get_reward(self, reward_y=0):
-        """中奖后领奖然后返回"""
+        """保留中奖现场，由本人确认领取与订单。"""
         self.operation.save_reward_pic(self.device_id)
-        self.click(243, reward_y)  # 勾选协议
-        self.operation.delay(1)
-        self.click(540, reward_y - 140)  # 点击领取
-        print("勾选协议，点击领取奖品")
-        self.operation.delay(5)
-        self.click(886, 2170)  # 点击下单
-        print("点击下单")
-        self.operation.delay(10)
-        while self.check_in_order_confirm_page():
-            # self.click(80, 180)  # 点击回退按钮
-            self.operation.click_back(self.device_id)
-            print("点击回退按钮")
-            self.operation.delay(4)
-        print("下完单返回到直播间")
-        self.operation.delay(4)
-        if self.check_lucky_draw_result():
-            print("领奖弹窗未关闭，点击关闭弹窗")
-            self.click(540, reward_y + 180)
-            print("点击坐标位置:540 {}关闭领奖弹窗".format((reward_y + 180) * self.resolution_ratio_y // 2400))
-            self.operation.delay(2)
-        if self.check_have_reward_notice_confirm():
-            print("提醒领奖弹窗未关闭，点击我知道了，关闭弹窗")
-            self.click(540, 1400)  # 点击我知道了
-            self.operation.delay(2)
-        self.operation.delay(30)
-        print("关闭中奖提醒后等待30S")
+        raise ManualActionRequired('检测到中奖，请手动确认领奖；脚本未勾选协议或提交订单')
 
     def deal_battery_level(self):
         """针对电量不足的情况做处理"""

@@ -1,21 +1,49 @@
-from paddleocr import PaddleOCR
 import subprocess
 from datetime import datetime, timedelta
 import os
 import time
 from PIL import Image, ImageFilter
-import numpy as np
+import io
+from pathlib import Path
+import shutil
 import logging
 import re
 import random
 import json
 
+class ManualActionRequired(RuntimeError):
+    """需要本人登录、验证或领取奖品时停止自动操作。"""
+
+
 class underlying_operations:
     """底层操作类"""
     def __init__(self):
-        self.ocr = PaddleOCR()
+        adb_path = os.environ.get('ADBUTILS_ADB_PATH')
+        if adb_path:
+            os.environ['PATH'] = str(Path(adb_path).resolve().parent) + os.pathsep + os.environ.get('PATH', '')
+        self.tesseract = shutil.which('tesseract')
+        self.ocr = None
+        if not self.tesseract:
+            from paddleocr import PaddleOCR
+            self.ocr = PaddleOCR()
         logging.disable(logging.DEBUG)
         logging.disable(logging.WARNING)
+
+    def _adb(self, device_id, *args):
+        executable = os.environ.get('ADBUTILS_ADB_PATH') or shutil.which('adb')
+        if not executable:
+            raise RuntimeError('找不到 adb，请配置 PATH 或 ADBUTILS_ADB_PATH')
+        return subprocess.run([executable, '-s', device_id, *map(str, args)],
+                              capture_output=True, check=True, timeout=15,
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+
+    def _ensure_douyin(self, device_id):
+        output = self._adb(device_id, 'shell', 'dumpsys', 'window').stdout.decode('utf-8', errors='replace')
+        match = re.search(r'mCurrentFocus=.*?\bu0\s+([\w.]+)/([^\s}]+)', output)
+        if not match or match.group(1) not in ('com.ss.android.ugc.aweme', 'com.ss.android.ugc.aweme.lite'):
+            raise RuntimeError('前台不是抖音，停止手势并保留当前页面')
+        if 'login' in match.group(2).lower():
+            raise ManualActionRequired('请在手机上手动登录抖音')
 
     def select_device(self):
         """选择需要连接的设备"""
@@ -51,28 +79,18 @@ class underlying_operations:
             return dictdevice[num]
 
     def get_screenshot(self, device_id, path='pic'):
-        """截图3个adb命令需要2S左右的时间"""
-        if path == 'pic':
-            path = os.path.dirname(__file__) + '/pic'
-        else:
-            path = os.path.dirname(__file__) + '/target_pic'
-        if not os.path.exists(path):
-            os.makedirs(path)
+        """一次 ADB 读取截图，验证成功后再替换本机文件。"""
+        folder = Path(__file__).resolve().parent / path if path in ('pic', 'target_pic') else Path(path)
+        data = self._adb(device_id, 'exec-out', 'screencap', '-p').stdout
         try:
-            subprocess.Popen(
-                'adb -s %s shell screencap -p /sdcard/DCIM/screenshot.png' % device_id).wait()  # -p: save the file as a png
-            subprocess.Popen('adb -s %s pull /sdcard/DCIM/screenshot.png %s ' % (device_id, path),
-                             stdout=subprocess.PIPE).wait()
-            timetag = datetime.now().strftime('%H:%M:%S')
-            print("{} 获取屏幕截图".format(timetag))
-            return True
-        # subprocess.Popen('adb  -s %s shell rm /sdcard/DCIM/screenshot.png' % device_id).wait()
-        except:
-            subprocess.Popen(
-                'adb -s %s shell screencap -p /sdcard/DCIM/screenshot1.png' % device_id).wait()
-            subprocess.Popen(
-                'adb -s %s shell mv /sdcard/DCIM/screenshot1.png /sdcard/DCIM/screenshot.png' % device_id).wait()
-            self.get_screenshot(path)
+            with Image.open(io.BytesIO(data)) as image:
+                image.verify()
+        except (OSError, ValueError) as exc:
+            raise RuntimeError('无法获取有效截图，请检查手机解锁状态和截图权限') from exc
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'screenshot.png').write_bytes(data)
+        print(f"{datetime.now():%H:%M:%S} 获取屏幕截图")
+        return True
 
     def get_current_hour(self):
         """获取当前的时间小时数"""
@@ -82,12 +100,14 @@ class underlying_operations:
 
     def click_confirm(self, device_id):
         """点击确认键"""
-        os.system("adb -s %s shell input keyevent 66" % device_id)
+        self._ensure_douyin(device_id)
+        self._adb(device_id, 'shell', 'input', 'keyevent', '66')
         print("点击确认键")
 
     def click_back(self, device_id):
         """点击返回键"""
-        os.system("adb -s %s shell input keyevent 4" % device_id)
+        self._ensure_douyin(device_id)
+        self._adb(device_id, 'shell', 'input', 'keyevent', '4')
         print("点击返回键")
 
     def get_ballery_level(self, device_id):
@@ -126,16 +146,11 @@ class underlying_operations:
             return False
 
     def save_reward_pic(self, device_id):
-        path = os.path.dirname(__file__) + '/pic'
-        timepic = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-        subprocess.Popen(
-            'adb -s %s shell screencap -p /sdcard/DCIM/screenshot.png' % (
-                device_id)).wait()  # 截图获奖的界面
-        subprocess.Popen(
-            'adb -s %s pull /sdcard/DCIM/screenshot.png %s/%s.png ' % (device_id, path, timepic),
-            stdout=subprocess.PIPE).wait()
-        subprocess.Popen('adb -s %s shell rm /sdcard/DCIM/screenshot.png' % device_id).wait()
-        print("中奖了，点击领奖，保存中奖图片{}.png".format(timepic))
+        self.get_screenshot(device_id)
+        folder = Path(__file__).resolve().parent / 'pic'
+        target = folder / f'{datetime.now():%Y-%m-%d-%H-%M-%S}.png'
+        shutil.copyfile(folder / 'screenshot.png', target)
+        print('已保存当前页面截图，仅供本机核对')
 
     def cut_pic(self, left_up=(0, 63), right_down=(1080, 1620), target='', name=''):
         '''裁剪图片，获取需要的区域小图片方便识别'''
@@ -173,7 +188,15 @@ class underlying_operations:
             img = img.point(lambda x: 0 if x < 180 else 255)  # 二值化
         # img.save(pic)
         # img.show()
-        img_np = np.array(img)  # 将 Image 对象转换为 numpy 数组
+        if self.tesseract:
+            data = io.BytesIO()
+            img.save(data, format='PNG')
+            result = subprocess.run([self.tesseract, 'stdin', 'stdout', '-l', 'chi_sim+eng', '--psm', '6'],
+                                    input=data.getvalue(), capture_output=True, check=True, timeout=10,
+                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            return re.sub(r'\s+', '', result.stdout.decode('utf-8'))
+        import numpy as np
+        img_np = np.array(img)
         result = self.ocr.ocr(img_np)
         if result == [None]:
             return ''
@@ -232,20 +255,16 @@ class underlying_operations:
 
     def swipe(self, device_id, left_up_x=0, left_up_y=0, right_down_x=1080, right_down_y=1500, steps=200):
         """划动屏幕"""
-        os.system("adb -s {} shell input swipe {} {} {} {} {}".format(device_id, left_up_x, left_up_y, right_down_x, right_down_y, steps))
+        self._ensure_douyin(device_id)
+        self._adb(device_id, 'shell', 'input', 'swipe', left_up_x, left_up_y, right_down_x, right_down_y, steps)
 
     def click(self, device_id, x=500, y=500):
         """点击坐标位置"""
-        os.system(
-            "adb -s {} shell input tap {} {}".format(device_id, x, y))
+        self._ensure_douyin(device_id)
+        self._adb(device_id, 'shell', 'input', 'tap', x, y)
 
     def input_text(self, device_id: str, text: str):
-        """输入文本"""
-        # escaped_text = text.replace("  ", "%s")  # 处理空格
-        try:
-            os.system(f"adb  -s {device_id} shell input text '{text}'")
-        except:
-            os.system(f"adb  -s {device_id} shell input text 'good!'")
+        raise ManualActionRequired('自动评论未启用，请手动输入与发送')
 
     def get_douyin_package_name(self, device_id):
         """获取抖音app的包名"""
@@ -263,31 +282,23 @@ class underlying_operations:
         return None
 
     def get_douyin_activity_name(self, device_id, package_name):
-        try:
-            # 运行 adb 命令查找该包的活动信息（指定设备）
-            cmd = ['adb', '-s', device_id, 'shell', 'dumpsys', 'package', package_name, '|', 'findstr', '"activity"']
-            result = subprocess.run('  '.join(cmd), shell=True, capture_output=True, text=True)
-            output = result.stdout
-            for line in output.splitlines():
-                if "activity" in line and package_name in line:
-                    # 直接提取完整的 package/activity 格式
-                    return line.split()[1]
-        except Exception as e:
-            print(f"[{datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}] 获取活动名时出错: {e}")
-        return None
+        if package_name not in ('com.ss.android.ugc.aweme', 'com.ss.android.ugc.aweme.lite'):
+            raise RuntimeError('未找到支持的抖音安装包')
+        output = self._adb(device_id, 'shell', 'cmd', 'package', 'resolve-activity', '--brief',
+                           '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER',
+                           package_name).stdout.decode('utf-8', errors='replace')
+        component = next((line.strip() for line in output.splitlines() if line.strip().startswith(package_name + '/')), None)
+        if not component:
+            raise RuntimeError('无法解析抖音启动入口')
+        return component
 
     def start_douyin_app(self, device_id):
         """启动抖音"""
-        try:
-            # 运行 adb 命令启动应用（指定设备）
-            package_name = self.get_douyin_package_name(device_id)
-            component = self.get_douyin_activity_name(device_id, package_name)
-            cmd = ['adb', '-s', device_id, 'shell', 'am', 'start', '-n', component]
-            subprocess.run(cmd)
-            print(f"[{datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}] 已在设备 {device_id} 启动: {package_name}")
-            self.delay(3)
-        except Exception as e:
-            print(f"[{datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}] 启动应用时出错: {e}")
+        package_name = self.get_douyin_package_name(device_id)
+        component = self.get_douyin_activity_name(device_id, package_name)
+        self._adb(device_id, 'shell', 'am', 'start', '-n', component)
+        print('已启动抖音')
+        self.delay(3)
 
     def stop_douyin_app(self, device_id):
         """强制关闭抖音"""
