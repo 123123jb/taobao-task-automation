@@ -2,7 +2,7 @@
 
 用 Python / uiautomator2 操作已登录的安卓手机，完成能量任务、领取累计奖励，再长按“升级赛车拿钱”消耗能量。
 
-2026-10-21 已同步累计任务达到 50 次后的进度确认修复，更新记录见 [CHANGELOG.md](CHANGELOG.md)。[安卓独立运行版](https://github.com/123123jb/taobao-task-automation/blob/feature/android-app/android/README.md)仍为开发测试版，真机出现面板识别和截图间隔错误，暂不建议用于日常任务；目前建议使用下方 Python / ADB 方式。
+2026-10-23 更新：补充 10 月 22 日 Python / ADB 实机验证，一轮确认记账 48 次，累计进度达到 50/50，后续页面复核三档奖励均已领取；详细结果与限制见 [LOCAL_SETUP.md](LOCAL_SETUP.md)，更新记录见 [CHANGELOG.md](CHANGELOG.md)。[安卓独立运行版](https://github.com/123123jb/taobao-task-automation/blob/feature/android-app/android/README.md)仍为开发测试版，真机出现面板识别和截图间隔错误，暂不建议用于日常任务；目前建议使用下方 Python / ADB 方式。
 
 ## Windows 本机运行
 
