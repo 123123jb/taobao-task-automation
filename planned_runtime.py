@@ -109,7 +109,7 @@ class PlannedRuntime:
     def followed_rooms(self):
         self.op._ensure_douyin(self.serial)
         root = ET.fromstring(self.device.dump_hierarchy())
-        if not any(n.get('content-desc') == '关注，已选中，按钮' for n in root.iter('node')):
+        if not any(set(n.get('content-desc', '').split('，')) == {'关注', '已选中', '按钮'} for n in root.iter('node')):
             raise RuntimeError('未确认关注列表，停止导航')
         rooms = {}
         for node in root.iter('node'):
@@ -138,12 +138,46 @@ class PlannedRuntime:
             self.op.click_back(self.serial)
             time.sleep(2)
 
-    def enter(self, index):
+    def followed_pages(self):
         self.lock.require_unlocked()
         rooms = self.return_to_followed()
+        yield rooms
+        # Rewind the avatar strip, then traverse to its other end. Coordinates
+        # come from the currently verified followed avatars, not video cards.
+        for direction in (-1, 1):
+            seen = {tuple(rooms)}
+            for _ in range(100):
+                self.lock.require_unlocked()
+                width = self.a.resolution_ratio_x
+                y = int(sum(p[1] for p in rooms.values()) / len(rooms))
+                left, right = int(width*.15), int(width*.85)
+                start, end = (right,left) if direction == 1 else (left,right)
+                self.op.swipe(self.serial, start, y, end, y, 400)
+                time.sleep(.7)
+                rooms = self.followed_rooms()
+                key = tuple(rooms)
+                if key in seen:
+                    break
+                seen.add(key)
+                yield rooms
+            else:
+                raise RuntimeError('关注列表仍在变化，暂停本次遍历')
+
+    def collect_followed_rooms(self):
+        names = dict.fromkeys(name for page in self.followed_pages() for name in page)
+        return list(names)
+
+    def enter(self, index):
+        self.lock.require_unlocked()
         name = self.rooms[index]
+        rooms = self.return_to_followed()
         if name not in rooms:
-            self.rooms = list(rooms)
+            for page in self.followed_pages():
+                rooms = page
+                if name in rooms:
+                    break
+        if name not in rooms:
+            self.rooms = self.collect_followed_rooms()
             print(f'关注列表已变化，重新筛选当前 {len(self.rooms)} 个直播间', flush=True)
             return False
         self.op.click(self.serial, *rooms[name])
@@ -155,7 +189,19 @@ class PlannedRuntime:
 
     def move(self, direction):
         self.lock.require_unlocked()
-        return self.enter((self.index + direction) % len(self.rooms))
+        self.close_panel()
+        target = (self.index + direction) % len(self.rooms)
+        self.live()
+        self.a.swipe(760, 1600 if direction > 0 else 800,
+                     760, 800 if direction > 0 else 1600, 350)
+        time.sleep(3)
+        observed = self.room_name(self.screen())
+        if observed == self.rooms[target]:
+            self.index = target
+            return True
+        # A swipe can enter recommendations or reorder rooms. Never inspect
+        # or comment there; select the intended verified followed avatar.
+        return self.enter(target)
 
     def details(self, picture):
         text = re.sub(r'\s+', '', self.ocr(picture.crop((0, 1000, 1080, 2280))))
@@ -407,35 +453,22 @@ class PlannedRuntime:
             # Resume waiting if the persisted draw has not finished yet.
             self.watch()
             self.return_to_followed()
-        self.rooms = list(self.followed_rooms())
-        print(f'仅筛选关注列表当前 {len(self.rooms)} 个直播间，180 秒内开奖优先参与，已开启评论={self.allow_comments}', flush=True)
+        self.rooms = self.collect_followed_rooms()
+        print(f'遍历关注列表后筛选 {len(self.rooms)} 个直播间，180 秒内开奖优先参与，已开启评论={self.allow_comments}', flush=True)
         while True:
             self.scan_cycle()
+            self.rooms = self.collect_followed_rooms()
             time.sleep(2)
 
     def scan_cycle(self):
-        candidates = []
         for count in range(len(self.rooms)):
-            if not self.enter(count):
+            entered = self.enter(count) if count == 0 else self.move(1)
+            if not entered:
                 return
             candidate = self.inspect()
-            if candidate:
-                remaining = candidate.deadline - time.time()
-                if 15 < remaining <= 120:
-                    print('两分钟内开奖，优先参与并蹲守', flush=True)
-                    self.join(candidate)
-                    self.close_panel()
-                    return
-                if 120 < remaining <= 180:
-                    candidates.append(candidate)
+            if candidate and 15 < candidate.deadline - time.time() <= 180:
+                print('三分钟内开奖，参与并蹲守至归零', flush=True)
+                self.join(candidate)
+                self.close_panel()
+                return
             self.close_panel()
-        best = choose_room(candidates, self.index, time.time())
-        if best is None or not self.enter(best.index):
-            return
-        refreshed = self.inspect()
-        if (refreshed is not None and refreshed.room == best.room
-                and abs(refreshed.deadline - best.deadline) <= 15
-                and 15 < refreshed.deadline - time.time() <= 180):
-            print('已比较关注直播间，参与剩余时间最短的可执行福袋', flush=True)
-            self.join(refreshed)
-        self.close_panel()

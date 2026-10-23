@@ -12,18 +12,18 @@ class SelectionTests(unittest.TestCase):
         runtime.rooms = rooms
         runtime.index = 0
         runtime.enter = Mock(return_value=True)
+        runtime.move = Mock(return_value=True)
         runtime.close_panel = Mock()
         runtime.join = Mock()
         return runtime
 
-    def test_compare_rooms_before_joining_a_longer_draw(self):
+    def test_three_minute_draw_is_joined_immediately_without_more_scouting(self):
         runtime = self.runtime(['first', 'second'])
-        runtime.inspect = Mock(side_effect=[Candidate('first', 0, 260),
-                                            Candidate('second', 1, 240),
-                                            Candidate('second', 1, 239)])
+        runtime.inspect = Mock(return_value=Candidate('first', 0, 280))
         with patch('planned_runtime.time.time', return_value=100):
             runtime.scan_cycle()
-        runtime.join.assert_called_once_with(Candidate('second', 1, 239))
+        runtime.enter.assert_called_once_with(0)
+        runtime.join.assert_called_once_with(Candidate('first', 0, 280))
 
     def test_two_minute_draw_is_joined_without_leaving_for_more_scouting(self):
         runtime = self.runtime(['first', 'second'])
@@ -32,13 +32,6 @@ class SelectionTests(unittest.TestCase):
             runtime.scan_cycle()
         runtime.enter.assert_called_once_with(0)
         runtime.join.assert_called_once()
-
-    def test_later_round_is_not_joined_using_an_old_observation(self):
-        runtime = self.runtime(['first'])
-        runtime.inspect = Mock(side_effect=[Candidate('first', 0, 250), Candidate('first', 0, 600)])
-        with patch('planned_runtime.time.time', return_value=100):
-            runtime.scan_cycle()
-        runtime.join.assert_not_called()
 
     def test_long_or_unreadable_draw_does_not_trigger_participation(self):
         runtime = self.runtime(['first', 'second'])

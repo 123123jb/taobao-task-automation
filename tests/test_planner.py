@@ -105,23 +105,6 @@ class PlannerTests(unittest.TestCase):
             runtime.open_bag(70)
         runtime.click.assert_called_once()
 
-    def test_move_uses_followed_targets_without_recommendation_swipe(self):
-        runtime = PlannedRuntime.__new__(PlannedRuntime)
-        runtime.lock = Mock()
-        runtime.a = Mock()
-        runtime.op = Mock()
-        runtime.live = Mock()
-        runtime.close_panel = Mock()
-        runtime.screen = Mock()
-        runtime.enter = Mock(return_value=True)
-        runtime.rooms = ['first', 'second']
-        runtime.index = 0
-        with patch('planned_runtime.time.sleep'):
-            runtime.move(1)
-        runtime.enter.assert_called_once_with(1)
-        runtime.a.swipe.assert_not_called()
-        runtime.op.click_back.assert_not_called()
-
     def test_three_minute_draw_is_joined_but_longer_draw_is_skipped(self):
         for seconds in (180, 181):
             with self.subTest(seconds=seconds):
@@ -297,7 +280,7 @@ class PlannerTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             runtime.followed_rooms()
 
-    def test_missing_followed_target_does_not_tap_or_swipe(self):
+    def test_missing_followed_target_refreshes_catalog_without_tapping(self):
         runtime = PlannedRuntime.__new__(PlannedRuntime)
         runtime.lock = Mock()
         runtime.close_panel = Mock()
@@ -307,6 +290,8 @@ class PlannerTests(unittest.TestCase):
         runtime.device.app_current.return_value = {'activity': 'SplashActivity'}
         runtime.rooms = ['原关注直播间']
         runtime.followed_rooms = Mock(return_value={'其他直播间': (50, 300)})
+        runtime.followed_pages = Mock(return_value=iter([{'其他直播间': (50, 300)}]))
+        runtime.collect_followed_rooms = Mock(return_value=['其他直播间'])
         self.assertFalse(runtime.enter(0))
         self.assertEqual(runtime.rooms, ['其他直播间'])
         runtime.op.click.assert_not_called()
