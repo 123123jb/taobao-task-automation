@@ -33,8 +33,12 @@ class PlannedRuntime:
         self.device.jsonrpc.setConfigurator({'waitForIdleTimeout': 0, 'waitForSelectorTimeout': 0})
 
     def live(self):
-        focus = self.op._adb(self.serial, 'shell', 'dumpsys', 'window').stdout.decode('utf-8', errors='replace')
-        match = re.search(r'mCurrentFocus=.*?\bu0\s+([\w.]+)/([^\s}]+)', focus)
+        for attempt in range(3):
+            focus = self.op._adb(self.serial, 'shell', 'dumpsys', 'window').stdout.decode('utf-8', errors='replace')
+            match = re.search(r'mCurrentFocus=.*?\bu0\s+([\w.]+)/([^\s}]+)', focus)
+            if match or 'mCurrentFocus=null' not in focus or attempt == 2:
+                break
+            time.sleep(.3)
         if not match or match[1] not in ('com.ss.android.ugc.aweme', 'com.ss.android.ugc.aweme.lite'):
             raise RuntimeError('前台不是抖音，暂停操作')
         if not match[2].endswith('LivePlayActivity'):
@@ -353,7 +357,19 @@ class PlannedRuntime:
             time.sleep(5)
             try:
                 if self.lock.state is None or time.time() >= self.lock.state['deadline'] + 10:
-                    self.followed_rooms()
+                    try:
+                        self.followed_rooms()
+                    except RuntimeError:
+                        if self.lock.state is not None or not getattr(self, 'rooms', None):
+                            continue
+                        picture = self.screen()
+                        if self.room_name(picture) not in self.rooms:
+                            continue
+                        text = re.sub(r'\s+', '', self.ocr(picture))
+                        if '说点什么' not in text or any(word in text for word in
+                                ('验证', '开始检测', '形状相同')):
+                            continue
+                        self.return_to_followed()
                     if self.lock.state is not None:
                         self.lock.release('本轮已结束')
                     self.panel = False

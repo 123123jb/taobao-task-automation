@@ -98,3 +98,27 @@ class SelectionTests(unittest.TestCase):
         with patch('planned_runtime.time.sleep'):
             self.assertEqual(runtime.return_to_followed(), {'room': (5, 5)})
         self.assertEqual(runtime.op.click_back.call_count, 2)
+
+    def test_temporary_focus_gap_during_animation_is_rechecked(self):
+        runtime = PlannedRuntime.__new__(PlannedRuntime)
+        runtime.serial = 'phone'
+        runtime.op = Mock()
+        runtime.op._adb.side_effect = [Mock(stdout=b'mCurrentFocus=null'),
+            Mock(stdout=b'mCurrentFocus=Window{abc u0 com.ss.android.ugc.aweme.lite/.live.LivePlayActivity}')]
+        with patch('planned_runtime.time.sleep'):
+            runtime.live()
+        self.assertEqual(runtime.op._adb.call_count, 2)
+
+    def test_unlocked_known_followed_room_recovers_without_user_navigation(self):
+        runtime = PlannedRuntime.__new__(PlannedRuntime)
+        runtime.lock = Mock(state=None)
+        runtime.rooms = ['known']
+        runtime.panel = False
+        runtime.followed_rooms = Mock(side_effect=RuntimeError('not on list'))
+        runtime.screen = Mock()
+        runtime.room_name = Mock(return_value='known')
+        runtime.ocr = Mock(return_value='说点什么')
+        runtime.return_to_followed = Mock(return_value={'known': (5, 5)})
+        with patch('planned_runtime.time.sleep'):
+            runtime.wait_for_resume()
+        runtime.return_to_followed.assert_called_once()
