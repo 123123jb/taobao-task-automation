@@ -1,1 +1,2 @@
 Pillow>=10
+uiautomator2>=3,<4

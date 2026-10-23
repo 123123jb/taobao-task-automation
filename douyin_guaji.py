@@ -5,16 +5,17 @@ import sys
 
 from douyin_fudai import fudai_analyse
 from Underlying_Operations import ManualActionRequired, underlying_operations
+from planned_runtime import PlannedRuntime
 
 class fudai_guaji:
     def __init__(self):
         self.analyser = fudai_analyse()
 
-    def guaji(self, serial=None):
+    def guaji(self, serial=None, allow_comments=False):
         """挂机函数"""
         device_id = serial or self.analyser.operation.select_device()
         if device_id:
-            self.analyser.fudai_choujiang(device_id, False, 15)
+            PlannedRuntime(self.analyser, device_id, allow_comments).run()
             return True
         raise RuntimeError('未检测到已授权设备，请连接手机并开启 USB 调试')
 
@@ -23,6 +24,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--serial', help='指定手机序列号')
     parser.add_argument('--check', action='store_true', help='只检查环境与设备，不操作手机')
+    parser.add_argument('--allow-comments', action='store_true', help='已获用户授权时点击福袋自带的一键发表评论')
     args = parser.parse_args()
     original_stdout = sys.stdout
     choujiang = None
@@ -40,7 +42,7 @@ if __name__ == '__main__':
             print('检查通过；OCR：' + ('本机 Tesseract' if operation.tesseract else 'PaddleOCR'))
         else:
             choujiang = fudai_guaji()
-            choujiang.guaji(args.serial)
+            choujiang.guaji(args.serial, args.allow_comments)
     except KeyboardInterrupt:
         print('已停止')
     except (ManualActionRequired, RuntimeError) as exc:
