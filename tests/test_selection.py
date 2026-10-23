@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import Mock, patch
+from PIL import Image
 
 from lottery_planner import Candidate
 from planned_runtime import PlannedRuntime
@@ -51,3 +52,15 @@ class SelectionTests(unittest.TestCase):
         self.assertTrue(PlannedRuntime.joined('参与成功等待开奖'))
         self.assertFalse(PlannedRuntime.joined('95人已参与福袋任务(1/2)发送评论未达成'))
         self.assertFalse(PlannedRuntime.joined('福袋任务(0/0)'))
+
+    def test_countdown_is_anchored_to_draw_label_not_background_video(self):
+        runtime = PlannedRuntime.__new__(PlannedRuntime)
+        runtime.ocr = Mock(return_value='视频计时00:10超级福袋任务01:30后开奖')
+        _, seconds = runtime.details(Image.new('RGB', (1080, 2400)))
+        self.assertEqual(seconds, 90)
+
+    def test_unrelated_time_requires_reading_actual_timer_region(self):
+        runtime = PlannedRuntime.__new__(PlannedRuntime)
+        runtime.ocr = Mock(side_effect=['视频计时00:10超级福袋任务', '0159'])
+        _, seconds = runtime.details(Image.new('RGB', (1080, 2400)))
+        self.assertEqual(seconds, 119)

@@ -151,7 +151,10 @@ class PlannedRuntime:
         self.panel = True
         # The current Super Lucky Bag uses pink digits in white boxes. Reading
         # the green channel isolates the digits; old offsets read the prize name.
-        seconds = parse_countdown(text)
+        # A live video can display its own clock behind the sheet. Only the
+        # timer immediately attached to the draw label can end our room lock.
+        labelled = re.search(r'(\d{1,2}[:：][0-5]\d)后开奖', text)
+        seconds = parse_countdown(labelled[1]) if labelled else None
         for top in (1255, 1305):
             if seconds is not None:
                 break
