@@ -146,6 +146,17 @@ class PlannedRuntime:
         text = re.sub(r'\s+', '', self.ocr(picture.crop((0, 1000, 1080, 2280))))
         if any(word in text for word in ('验证码', '完成验证', '拖动滑块')):
             raise ManualActionRequired('出现人工验证，保留当前页面')
+        unclear_tasks = '任务' not in text or ('加入' in text and not re.search(r'加入.{0,45}已达成', text))
+        if '福袋' in text and unclear_tasks:
+            # Pink labels on the purple sheet are often read as Latin letters.
+            # Separate the task header and rows; green separates the label from
+            # the background, while enlarged RGB preserves completed statuses.
+            header_image = picture.crop((30, 1780, 1050, 1870)).resize((2040, 180))
+            header = re.sub(r'\s+', '', self.ocr(header_image.getchannel('G')))
+            if '福袋任务' in header:
+                rows_image = picture.crop((30, 1840, 1050, 2020)).resize((2040, 360))
+                rows = re.sub(r'\s+', '', self.ocr(rows_image))
+                text = re.split(r'福袋任务|发送评论', text, maxsplit=1)[0] + header + rows
         if '福袋' not in text or '任务' not in text:
             raise RuntimeError('当前弹层不是已验证的福袋布局，停止点击')
         self.panel = True

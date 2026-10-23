@@ -64,3 +64,14 @@ class SelectionTests(unittest.TestCase):
         runtime.ocr = Mock(side_effect=['视频计时00:10超级福袋任务', '0159'])
         _, seconds = runtime.details(Image.new('RGB', (1080, 2400)))
         self.assertEqual(seconds, 119)
+
+    def test_focused_task_regions_recover_purple_sheet_and_completed_membership(self):
+        runtime = PlannedRuntime.__new__(PlannedRuntime)
+        runtime.ocr = Mock(side_effect=[
+            '福袋奖品03:04后开奖BAILA(1/2)发送评论你好未达成加入HR会员BAR',
+            '福袋任务(1/2)',
+            '发送评论你好未达成加入HR会员已达成',
+        ])
+        text, seconds = runtime.details(Image.new('RGB', (1080, 2400)))
+        self.assertEqual(seconds, 184)
+        self.assertTrue(runtime.allowed(text, True))
