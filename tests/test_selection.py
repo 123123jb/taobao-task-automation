@@ -75,3 +75,26 @@ class SelectionTests(unittest.TestCase):
         text, seconds = runtime.details(Image.new('RGB', (1080, 2400)))
         self.assertEqual(seconds, 184)
         self.assertTrue(runtime.allowed(text, True))
+
+    def test_close_sheet_uses_back_instead_of_tapping_video_behind_it(self):
+        runtime = PlannedRuntime.__new__(PlannedRuntime)
+        runtime.panel = True
+        runtime.live = Mock()
+        runtime.op = Mock()
+        runtime.serial = 'phone'
+        runtime.click = Mock()
+        with patch('planned_runtime.time.sleep'):
+            runtime.close_panel()
+        runtime.op.click_back.assert_called_once_with('phone')
+        runtime.click.assert_not_called()
+
+    def test_return_to_followed_handles_nested_sheet_then_room_exit(self):
+        runtime = PlannedRuntime.__new__(PlannedRuntime)
+        runtime.lock = Mock()
+        runtime.live = Mock()
+        runtime.op = Mock()
+        runtime.serial = 'phone'
+        runtime.followed_rooms = Mock(side_effect=[RuntimeError('sheet'), RuntimeError('room'), {'room': (5, 5)}])
+        with patch('planned_runtime.time.sleep'):
+            self.assertEqual(runtime.return_to_followed(), {'room': (5, 5)})
+        self.assertEqual(runtime.op.click_back.call_count, 2)

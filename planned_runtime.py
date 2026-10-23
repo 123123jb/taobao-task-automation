@@ -96,8 +96,9 @@ class PlannedRuntime:
 
     def close_panel(self):
         if self.panel:
-            # Outside the verified bottom sheet; never tap the coupon icon.
-            self.click(540, 700)
+            # The web sheet ignores taps on the video behind it on this phone.
+            self.live()
+            self.op.click_back(self.serial)
             self.panel = False
             time.sleep(1)
 
@@ -117,15 +118,25 @@ class PlannedRuntime:
             raise RuntimeError('关注列表当前没有可见直播间')
         return rooms
 
-    def enter(self, index):
+    def return_to_followed(self):
         self.lock.require_unlocked()
-        self.close_panel()
-        self.op._ensure_douyin(self.serial)
-        activity = self.device.app_current().get('activity', '')
-        if activity.endswith('LivePlayActivity'):
+        for attempt in range(4):
+            try:
+                rooms = self.followed_rooms()
+                self.panel = False
+                return rooms
+            except RuntimeError:
+                if attempt == 3:
+                    raise
+            # Back may first dismiss a result/sheet and only then leave the
+            # room. Check the destination after each step, without blind taps.
+            self.live()
             self.op.click_back(self.serial)
             time.sleep(2)
-        rooms = self.followed_rooms()
+
+    def enter(self, index):
+        self.lock.require_unlocked()
+        rooms = self.return_to_followed()
         name = self.rooms[index]
         if name not in rooms:
             self.rooms = list(rooms)
@@ -379,9 +390,7 @@ class PlannedRuntime:
         if self.lock.state is not None:
             # Resume waiting if the persisted draw has not finished yet.
             self.watch()
-            self.close_panel()
-            self.op.click_back(self.serial)
-            time.sleep(2)
+            self.return_to_followed()
         self.rooms = list(self.followed_rooms())
         print(f'仅筛选关注列表当前 {len(self.rooms)} 个直播间，180 秒内开奖优先参与，已开启评论={self.allow_comments}', flush=True)
         while True:
