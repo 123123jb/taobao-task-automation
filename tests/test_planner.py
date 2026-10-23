@@ -223,7 +223,7 @@ class PlannerTests(unittest.TestCase):
                 lock.acquire('second', 200)
 
     def test_watch_waits_until_draw_then_continues_without_reading_result(self):
-        for times in ([100, 110], [1000]):
+        for times in ([99, 100], [100], [1000]):
             with self.subTest(times=times), tempfile.TemporaryDirectory() as directory:
                 runtime = PlannedRuntime.__new__(PlannedRuntime)
                 runtime.lock = RoomLock(Path(directory) / 'lock.json')

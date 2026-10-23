@@ -334,7 +334,7 @@ class PlannedRuntime:
         deadline = self.lock.state['deadline']
         while True:
             self.live()
-            remaining = deadline + 10 - time.time()
+            remaining = deadline - time.time()
             if remaining <= 0:
                 self.lock.release('本轮已结束')
                 print('开奖倒计时已结束，不检查中奖结果，继续下一轮', flush=True)
@@ -356,7 +356,7 @@ class PlannedRuntime:
         while True:
             time.sleep(5)
             try:
-                if self.lock.state is None or time.time() >= self.lock.state['deadline'] + 10:
+                if self.lock.state is None or time.time() >= self.lock.state['deadline']:
                     try:
                         self.followed_rooms()
                     except RuntimeError:
@@ -382,7 +382,7 @@ class PlannedRuntime:
                         ('验证码', '完成验证', '拖动滑块', '开始检测', '形状相同', '安全验证')):
                     continue
                 if self.lock.state is not None:
-                    if time.time() >= self.lock.state['deadline'] + 10:
+                    if time.time() >= self.lock.state['deadline']:
                         self.lock.release('本轮已结束')
                     elif room != self.lock.state['room']:
                         continue
