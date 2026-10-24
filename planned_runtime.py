@@ -19,6 +19,10 @@ from Underlying_Operations import ManualActionRequired
 RECOVERABLE_ERRORS = (RuntimeError, OSError, subprocess.SubprocessError, ET.ParseError)
 
 
+class BagReadTimeout(RuntimeError):
+    """A bag opened during scouting could not be read within the load budget."""
+
+
 class PlannedRuntime:
     def __init__(self, analyser, serial, allow_comments=False):
         self.a = analyser
@@ -287,10 +291,17 @@ class PlannedRuntime:
         if position is None:
             print(f'筛选 {room}: 未确认福袋图标', flush=True)
             return None
-        picture, text, seconds = self.open_bag(position)
+        try:
+            picture, text, seconds = self.open_bag(position)
+        except BagReadTimeout:
+            self.lock.require_unlocked()
+            print(f'筛选 {room}: 福袋读取超时，关闭并跳过本轮', flush=True)
+            self.panel = True
+            self.close_panel()
+            return None
         self.panel_room = room
         if self.joined(text):
-            self.lock.acquire(room, time.time() + (seconds or 900))
+            self.lock.acquire(room, time.time() + (seconds if seconds is not None else 900))
             self.watch()
             return None
         if seconds is None or not self.allowed(text, self.allow_comments):
@@ -311,7 +322,7 @@ class PlannedRuntime:
             try:
                 text, seconds = self.details(picture)
                 complete = seconds is not None and (
-                    self.joined(text)
+                    seconds == 0 or self.joined(text)
                     or not self.allowed(text, self.allow_comments)
                     or self.participation_button(picture) is not None)
                 if complete:
@@ -320,11 +331,11 @@ class PlannedRuntime:
                 raise
             except RuntimeError:
                 if time.monotonic() >= until:
-                    raise
+                    raise BagReadTimeout('福袋布局读取超时')
                 continue
             if time.monotonic() >= until:
                 picture.save('logs/incomplete-lottery-panel.png')
-                raise RuntimeError('福袋弹层尚未完整展开，暂停操作，避免遗漏评论按钮')
+                raise BagReadTimeout('福袋弹层读取超时')
 
     def participation_button(self, picture):
         button = re.sub(r'\s+', '', self.ocr(picture.crop((260, 2030, 840, 2165))))
