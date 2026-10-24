@@ -212,7 +212,7 @@ class PlannedRuntime:
         if any(word in text for word in ('验证码', '完成验证', '拖动滑块')):
             raise ManualActionRequired('出现人工验证，保留当前页面')
         unclear_tasks = '任务' not in text or ('加入' in text and not re.search(r'加入.{0,45}已达成', text))
-        if '福袋' in text and unclear_tasks:
+        if '福袋' in text and unclear_tasks and not self.joined(text):
             # Pink labels on the purple sheet are often read as Latin letters.
             # Separate the task header and rows; green separates the label from
             # the background, while enlarged RGB preserves completed statuses.
@@ -222,7 +222,7 @@ class PlannedRuntime:
                 rows_image = picture.crop((30, 1840, 1050, 2020)).resize((2040, 360))
                 rows = re.sub(r'\s+', '', self.ocr(rows_image))
                 text = re.split(r'福袋任务|发送评论', text, maxsplit=1)[0] + header + rows
-        if '福袋' not in text or '任务' not in text:
+        if '福袋' not in text or ('任务' not in text and not self.joined(text)):
             raise RuntimeError('当前弹层不是已验证的福袋布局，停止点击')
         self.panel = True
         # The current Super Lucky Bag uses pink digits in white boxes. Reading
@@ -417,7 +417,11 @@ class PlannedRuntime:
                     try:
                         self.followed_rooms()
                     except RuntimeError:
-                        if self.lock.state is not None or not getattr(self, 'rooms', None):
+                        if self.lock.state is not None:
+                            self.watch()
+                            self.return_to_followed()
+                            return
+                        if not getattr(self, 'rooms', None):
                             continue
                         picture = self.screen()
                         if self.room_name(picture) not in self.rooms:
