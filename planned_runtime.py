@@ -37,15 +37,20 @@ class PlannedRuntime:
         self.device.jsonrpc.setConfigurator({'waitForIdleTimeout': 0, 'waitForSelectorTimeout': 0})
 
     def live(self):
+        # 双开/多任务时 dumpsys 里可能同时存在多个 mCurrentFocus 窗口，
+        # 只取第一个会误判“当前不是普通直播间”；这里收集全部再判断。
+        douyin = []
         for attempt in range(3):
             focus = self.op._adb(self.serial, 'shell', 'dumpsys', 'window').stdout.decode('utf-8', errors='replace')
-            match = re.search(r'mCurrentFocus=.*?\bu0\s+([\w.]+)/([^\s}]+)', focus)
-            if match or 'mCurrentFocus=null' not in focus or attempt == 2:
+            matches = re.findall(r'mCurrentFocus=.*?\bu0\s+([\w.]+)/([^\s}]+)', focus)
+            douyin = [(package, activity) for package, activity in matches
+                      if package in ('com.ss.android.ugc.aweme', 'com.ss.android.ugc.aweme.lite')]
+            if douyin or 'mCurrentFocus=null' not in focus or attempt == 2:
                 break
             time.sleep(.3)
-        if not match or match[1] not in ('com.ss.android.ugc.aweme', 'com.ss.android.ugc.aweme.lite'):
+        if not douyin:
             raise RuntimeError('前台不是抖音，暂停操作')
-        if not match[2].endswith('LivePlayActivity'):
+        if not any(activity.endswith('LivePlayActivity') for _, activity in douyin):
             raise ManualActionRequired('当前不是普通直播间，停止操作；请手动返回直播间')
 
     def screen(self):
@@ -75,6 +80,20 @@ class PlannedRuntime:
                                 check=True, timeout=20,
                                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         return output.stdout.decode('utf-8', errors='replace').strip()
+
+    def comment_input_visible(self):
+        # Tesseract often misses the grey "说点什么" hint on busy live pages;
+        # accessibility exposes the EditText reliably, so use it as an extra
+        # "normal live page" signal for resume.
+        try:
+            root = ET.fromstring(self.device.dump_hierarchy())
+        except (ET.ParseError, TypeError):
+            return False
+        for node in root.iter('node'):
+            label = (node.get('text', '') or '') + (node.get('content-desc', '') or '')
+            if '说点什么' in label:
+                return True
+        return False
 
     def room_name(self, picture, expected=None):
         # Accessibility exposes the full name even when the painted title is
@@ -110,11 +129,8 @@ class PlannedRuntime:
             self.panel = False
             time.sleep(1)
 
-    def followed_rooms(self):
-        self.op._ensure_douyin(self.serial)
-        root = ET.fromstring(self.device.dump_hierarchy())
-        if not any(set(n.get('content-desc', '').split('，')) == {'关注', '已选中', '按钮'} for n in root.iter('node')):
-            raise RuntimeError('未确认关注列表，停止导航')
+    @staticmethod
+    def _visible_followed(root):
         rooms = {}
         for node in root.iter('node'):
             label = node.get('content-desc', '')
@@ -122,6 +138,27 @@ class PlannedRuntime:
             if label.endswith('直播中') and len(bounds) == 4 and bounds[1] < 600:
                 x1, y1, x2, y2 = bounds
                 rooms[re.sub(r'\s+', '', label[:-3])] = ((x1+x2)//2, (y1+y2)//2)
+        return rooms
+
+    def followed_rooms(self):
+        self.op._ensure_douyin(self.serial)
+        root = ET.fromstring(self.device.dump_hierarchy())
+        if not any(set(n.get('content-desc', '').split('，')) == {'关注', '已选中', '按钮'} for n in root.iter('node')):
+            raise RuntimeError('未确认关注列表，停止导航')
+        rooms = self._visible_followed(root)
+        if not rooms:
+            # 关注头像条里混有未开播的关注；停在非直播区时先左滑回到直播区，
+            # 而不是直接把“没有可见直播间”抛给上层中断整轮导航。
+            width, height = self.a.resolution_ratio_x, self.a.resolution_ratio_y
+            y = int(height * .156)
+            for _ in range(12):
+                self.op.swipe(self.serial, int(width*.15), y, int(width*.85), y, 300)
+                time.sleep(.6)
+                root = ET.fromstring(self.device.dump_hierarchy())
+                rooms = self._visible_followed(root)
+                if rooms:
+                    print('关注头像条已左滑回直播区', flush=True)
+                    break
         if not rooms:
             raise RuntimeError('关注列表当前没有可见直播间')
         return rooms
@@ -427,8 +464,9 @@ class PlannedRuntime:
                         if self.room_name(picture) not in self.rooms:
                             continue
                         text = re.sub(r'\s+', '', self.ocr(picture))
-                        if '说点什么' not in text or any(word in text for word in
-                                ('验证', '开始检测', '形状相同')):
+                        if '说点什么' not in text and not self.comment_input_visible():
+                            continue
+                        if any(word in text for word in ('验证', '开始检测', '形状相同')):
                             continue
                         self.return_to_followed()
                     if self.lock.state is not None:
@@ -439,7 +477,9 @@ class PlannedRuntime:
                 picture = self.screen()
                 room = self.room_name(picture)
                 text = re.sub(r'\s+', '', self.ocr(picture))
-                if '说点什么' not in text or any(word in text for word in
+                if '说点什么' not in text and not self.comment_input_visible():
+                    continue
+                if any(word in text for word in
                         ('验证码', '完成验证', '拖动滑块', '开始检测', '形状相同', '安全验证')):
                     continue
                 if self.lock.state is not None:
